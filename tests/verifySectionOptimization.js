@@ -16,7 +16,10 @@ import {
   evaluateSectionAlignment,
   buildBatchSectionOptimizationPrompt,
   generateDeterministicSectionOptimization,
+  normalizeAndSafeguardSections,
   batchOptimizeDynamicSectionsPipeline,
+  sanitizeCompletedSentence,
+  DANGLING_END_WORDS,
 } from '../src/services/sectionOptimizationService.js';
 
 console.log('================================================================');
@@ -280,6 +283,93 @@ async function runTests() {
     forbidsHallucinations,
     'Test 5A: Prompt strictly mandates Grounding Constraints prohibiting fake metrics and companies',
     'Explicit instructions forbid invented scales, tools, or fabricated employer names'
+  );
+
+  // ----------------------------------------------------------------------
+  // Test Category 6: Sentence Truncation & Dangling Preposition Stripping
+  // ----------------------------------------------------------------------
+  console.log('\n--- TEST CATEGORY 6: SENTENCE TRUNCATION & DANGLING PREPOSITIONS ---');
+
+  // 6A: enforceLengthConstraint strips trailing dangling prepositions like "at."
+  const danglingAtBullet = 'Developed web application using React and Django with JWT authentication at.';
+  const enforcedAt = enforceLengthConstraint(baselineBullet, danglingAtBullet, 10);
+  assert(
+    !enforcedAt.text.endsWith('at.') && enforcedAt.text.endsWith('.') && !enforcedAt.text.includes('at.'),
+    'Test 6A: enforceLengthConstraint strips dangling preposition "at." and restores clean terminal punctuation',
+    `Result: "${enforcedAt.text}"`
+  );
+
+  // 6B: enforceLengthConstraint strips trailing conjunction without punctuation ("and")
+  const danglingAndBullet = 'Developed web application using React and Django and';
+  const enforcedAnd = enforceLengthConstraint(baselineBullet, danglingAndBullet, 10);
+  assert(
+    !enforcedAnd.text.endsWith('and.') && enforcedAnd.text.endsWith('Django.'),
+    'Test 6B: enforceLengthConstraint strips unpunctuated dangling conjunction "and" and appends terminal period',
+    `Result: "${enforcedAnd.text}"`
+  );
+
+  // 6C: enforceLengthConstraint strips multi-word dangling phrases like "in order to."
+  const danglingPhraseBullet = 'Engineered high-performance RESTful APIs using Python and Django in order to.';
+  const enforcedPhrase = enforceLengthConstraint(baselineBullet, danglingPhraseBullet, 10);
+  assert(
+    !enforcedPhrase.text.includes('in order to') && enforcedPhrase.text.endsWith('Django.'),
+    'Test 6C: enforceLengthConstraint strips multi-word dangling clause "in order to."',
+    `Result: "${enforcedPhrase.text}"`
+  );
+
+  // 6D: normalizeAndSafeguardSections sanitizes raw AI outputs across Summary, Internships, and Projects
+  const mockRawLlmWithDangling = {
+    summary: {
+      proposedText: 'Results-driven software developer with internship experience building scalable web architectures and backend APIs at.',
+      needs_rewrite: true,
+      integratedKeywords: ['Python'],
+    },
+    internships: [
+      {
+        id: 'exp_0',
+        company: defaultMasterProfile.workExperience[0].company,
+        proposedBullets: [
+          'Spearheaded enterprise web audit platform using React and Django with.',
+        ],
+        needs_rewrite: true,
+      },
+    ],
+    projects: [
+      {
+        id: 'proj_0',
+        name: defaultMasterProfile.projects[0].name,
+        proposedDescription: 'Engineered an automated classification pipeline using Python, NLP, and machine learning models for the.',
+        needs_rewrite: true,
+      },
+    ],
+  };
+
+  const normalized = normalizeAndSafeguardSections(mockRawLlmWithDangling, defaultMasterProfile);
+
+  assert(
+    !normalized.summary.proposedText.endsWith('at.') && normalized.summary.proposedText.endsWith('APIs.'),
+    'Test 6D: normalizeAndSafeguardSections sanitizes professional summary ending with "at."',
+    `Summary: "${normalized.summary.proposedText}"`
+  );
+
+  assert(
+    !normalized.internships[0].proposedBullets[0].endsWith('with.') && normalized.internships[0].proposedBullets[0].endsWith('Django.'),
+    'Test 6E: normalizeAndSafeguardSections sanitizes internship bullet ending with "with."',
+    `Bullet: "${normalized.internships[0].proposedBullets[0]}"`
+  );
+
+  assert(
+    !normalized.projects[0].proposedDescription.endsWith('the.') &&
+      !normalized.projects[0].proposedDescription.endsWith('for.') &&
+      normalized.projects[0].proposedDescription.endsWith('models.'),
+    'Test 6F: normalizeAndSafeguardSections sanitizes project description ending with nested dangling prepositions "for the."',
+    `Project: "${normalized.projects[0].proposedDescription}"`
+  );
+
+  assert(
+    typeof sanitizeCompletedSentence === 'function' && DANGLING_END_WORDS.has('at') && DANGLING_END_WORDS.has('and'),
+    'Test 6G: sanitizeCompletedSentence and DANGLING_END_WORDS exported from sectionOptimizationService',
+    `DANGLING_END_WORDS size: ${DANGLING_END_WORDS.size}`
   );
 
   // Summary

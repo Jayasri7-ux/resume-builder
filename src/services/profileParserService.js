@@ -5,7 +5,7 @@
  * and maps the output into the structured Master Profile schema.
  */
 
-import { OLLAMA_BASE_URL, DEFAULT_MODEL, safeParseJson } from './ollamaService.js';
+import { OLLAMA_BASE_URL, DEFAULT_MODEL, safeParseJson, extractOllamaResponseText } from './ollamaService.js';
 import { normalizeMasterProfile, validateMasterProfile } from '../types/masterProfileSchema.js';
 
 /**
@@ -156,7 +156,8 @@ export async function parseResumeWithOllama({
   rawResumeText,
   model = DEFAULT_MODEL,
   baseUrl = OLLAMA_BASE_URL,
-  options = { temperature: 0.1 },
+  options = { temperature: 0.1, num_predict: 2048 },
+  timeoutMs = 30000,
 }) {
   if (!rawResumeText || !rawResumeText.trim()) {
     return { success: false, error: 'Resume text is empty. Please provide resume content to parse.' };
@@ -193,6 +194,15 @@ export async function parseResumeWithOllama({
 
     const prompt = buildProfileParsingPrompt(trimmed);
 
+    const finalOptions = {
+      temperature: 0.1,
+      num_predict: 2048,
+      ...options,
+    };
+    if (!finalOptions.num_predict || finalOptions.num_predict < 512) {
+      finalOptions.num_predict = 2048;
+    }
+
     const requestBody = {
       model,
       prompt,
@@ -200,51 +210,63 @@ export async function parseResumeWithOllama({
         'You are an expert resume parsing engine. Always extract all profile sections into valid JSON matching the schema.',
       format: 'json',
       stream: false,
-      options,
+      options: finalOptions,
     };
 
-    const response = await fetch(`${baseUrl}/api/generate`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-      },
-      body: JSON.stringify(requestBody),
-    });
+    const cleanBaseUrl = (baseUrl || OLLAMA_BASE_URL).replace(/\/+$/, '');
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => '');
-      throw new Error(`Ollama API error (${response.status} ${response.statusText}): ${errorText || 'Failed to call Ollama'}`);
+    try {
+      const response = await fetch(`${cleanBaseUrl}/api/generate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: JSON.stringify(requestBody),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => '');
+        throw new Error(`Ollama API error (${response.status} ${response.statusText}): ${errorText || 'Failed to call Ollama'}`);
+      }
+
+      const result = await response.json();
+      const rawText = extractOllamaResponseText(result);
+
+      if (!rawText) {
+        throw new Error('Ollama returned invalid response format (missing response string).');
+      }
+
+      // Safely parse JSON from model output
+      const rawParsed = safeParseJson(rawText);
+
+      // Normalize through schema helper to guarantee all arrays and fields exist
+      const normalizedProfile = normalizeMasterProfile({
+        ...rawParsed,
+        metadata: {
+          source: `ollama_${model}`,
+          lastUpdated: new Date().toISOString(),
+          modelUsed: model,
+        },
+      });
+
+      return {
+        success: true,
+        profile: normalizedProfile,
+        raw: rawText,
+        durationMs: result.total_duration ? Math.round(result.total_duration / 1000000) : null,
+      };
+    } finally {
+      clearTimeout(timeoutId);
     }
-
-    const result = await response.json();
-
-    if (!result || typeof result.response !== 'string') {
-      throw new Error('Ollama returned invalid response format (missing response string).');
-    }
-
-    // Safely parse JSON from model output
-    const rawParsed = safeParseJson(result.response);
-
-    // Normalize through schema helper to guarantee all arrays and fields exist
-    const normalizedProfile = normalizeMasterProfile({
-      ...rawParsed,
-      metadata: {
-        source: `ollama_${model}`,
-        lastUpdated: new Date().toISOString(),
-        modelUsed: model,
-      },
-    });
-
-    return {
-      success: true,
-      profile: normalizedProfile,
-      raw: result.response,
-      durationMs: result.total_duration ? Math.round(result.total_duration / 1000000) : null,
-    };
   } catch (error) {
     let message = error.message;
-    if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
+    if (error.name === 'AbortError') {
+      message = `Resume parsing timed out after ${timeoutMs / 1000}s on ${baseUrl}.`;
+    } else if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
       message = `Cannot reach Ollama at ${baseUrl}. Ensure Ollama is running ('ollama serve') and CORS allows browser requests ($env:OLLAMA_ORIGINS="*").`;
     }
 

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   Sparkles,
   Briefcase,
@@ -6,7 +6,6 @@ import {
   ShieldCheck,
   ShieldAlert,
   CheckCircle2,
-  AlertCircle,
   Copy,
   Check,
   TrendingUp,
@@ -18,17 +17,36 @@ import {
   ChevronDown,
   ChevronUp,
   ArrowRight,
+  Link,
+  Globe,
+  ClipboardList,
+  Download,
 } from 'lucide-react';
 import { SAMPLE_JOB_DESCRIPTIONS } from '../data/sampleJobDescriptions';
-import { tailorResumePipeline } from '../services/tailoringService';
-import { evaluateJobDescriptionPipeline, calculateBaselineScore } from '../services/gatekeeperService';
+import { tailorResumePipeline, compileFinalTailoredResume } from '../services/tailoringService';
+import {
+  evaluateJobDescriptionPipeline,
+  calculateBaselineScore,
+  evaluateBatchYearEligibility,
+  evaluateExclusiveInstitutionTier,
+  evaluateExperienceLevel,
+} from '../services/gatekeeperService';
 import { runTechExtractionPipeline } from '../services/techExtractionService';
 import { checkOllamaConnection, DEFAULT_MODEL } from '../services/ollamaService';
-import { batchOptimizeDynamicSectionsPipeline } from '../services/sectionOptimizationService';
+import {
+  batchOptimizeDynamicSectionsPipeline,
+  extractTextString,
+  buildOptimizationRationale,
+} from '../services/sectionOptimizationService';
+import { isJobUrl, scrapeJobUrl, isKnownNonJobUrl, INVALID_JOB_URL_ERROR } from '../services/jobUrlScraperService';
+import { exportTailoredDocx, exportTailoredPdf } from '../services/docxExportService';
 import MasterProfileView from './MasterProfileView';
 import TechXRayDashboard from './TechXRayDashboard';
 import SectionDiffPreview from './SectionDiffPreview';
-import SectionCustomInstruction from './SectionCustomInstruction';
+import SectionCustomInstruction, { BULLET_QUICK_CHIPS } from './SectionCustomInstruction';
+import OptimizationLogView from './OptimizationLogView';
+
+export { extractTextString, buildOptimizationRationale, exportTailoredPdf, exportTailoredDocx };
 
 export default function TailoredResumeWorkspace({
   profile,
@@ -38,10 +56,31 @@ export default function TailoredResumeWorkspace({
   onPreviewTailoredResume,
   onTailoredResultChange,
   onBaselineScoreChange,
+  approvedChangesLog: externalApprovedLog,
+  onApprovedChangesChange,
+  onNavigateToStage,
 }) {
+  const [workspaceTab, setWorkspaceTab] = useState('steps'); // 'steps' | 'log'
+  const [internalApprovedLog, setInternalApprovedLog] = useState([]);
+  const approvedChangesLog = externalApprovedLog !== undefined ? externalApprovedLog : internalApprovedLog;
+
+  const setApprovedChangesLog = useCallback((updater) => {
+    setInternalApprovedLog((prev) => {
+      const base = externalApprovedLog !== undefined ? externalApprovedLog : prev;
+      const next = typeof updater === 'function' ? updater(base) : updater;
+      onApprovedChangesChange?.(next);
+      return next;
+    });
+  }, [externalApprovedLog, onApprovedChangesChange]);
   // Job Description Input State (starts completely empty on load)
   const [jobDescription, setJobDescription] = useState('');
   const [isJdCollapsed, setIsJdCollapsed] = useState(false);
+
+  // Job URL Scraping & Extraction State
+  const [isExtractingUrl, setIsExtractingUrl] = useState(false);
+  const [urlExtractError, setUrlExtractError] = useState(null);
+  const [showUrlInput, setShowUrlInput] = useState(false);
+  const [urlInputText, setUrlInputText] = useState('');
 
   // Gatekeeper Evaluation & Baseline Scoring State
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -65,37 +104,132 @@ export default function TailoredResumeWorkspace({
   const [executionNotice, setExecutionNotice] = useState(null);
   const [copied, setCopied] = useState(false);
   const [optimizedSections, setOptimizedSections] = useState(null);
+  // User approval / rejection review decisions: { [id]: 'approved' | 'rejected' | 'bypassed' }
+  const [sectionReviewDecisions, setSectionReviewDecisions] = useState({});
   // Undo history stack for card-level custom instructions
   const [sectionHistory, setSectionHistory] = useState({});
+  // Active custom edits override state for section custom instructions
+  const [customEdits, setCustomEdits] = useState({});
+  // Active tailored projects override state
+  const [tailoredProjects, setTailoredProjects] = useState([]);
+
+  // Document Export Pipeline State (Single-Page PDF & DOCX)
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [isExportingDocx, setIsExportingDocx] = useState(false);
+  const [exportNotice, setExportNotice] = useState(null);
 
   // Modal to inspect original Master Profile
   const [isMasterProfileModalOpen, setIsMasterProfileModalOpen] = useState(false);
 
-  // Check Ollama connection on mount
-  useEffect(() => {
-    let ignore = false;
-    checkOllamaConnection()
-      .then((res) => {
-        if (!ignore) {
-          setOllamaOnline(res.success);
-          if (res.models && res.models.length > 0) {
-            setAvailableModels(res.models);
-            setSelectedModel(res.models[0].name || DEFAULT_MODEL);
-          }
-        }
-      })
-      .catch(() => {
-        if (!ignore) setOllamaOnline(false);
-      });
-
-    return () => {
-      ignore = true;
-    };
+  // Check Ollama connection on mount, focus, and polling interval
+  const verifyOllamaStatus = useCallback(async () => {
+    try {
+      const res = await checkOllamaConnection();
+      setOllamaOnline(res.success);
+      if (res.success && res.models && res.models.length > 0) {
+        setAvailableModels(res.models);
+        setSelectedModel((prev) => {
+          const exists = res.models.some((m) => m.name === prev);
+          return exists ? prev : (res.models[0].name || DEFAULT_MODEL);
+        });
+      }
+      return res.success;
+    } catch {
+      setOllamaOnline(false);
+      return false;
+    }
   }, []);
 
+  useEffect(() => {
+    verifyOllamaStatus();
+
+    // Re-check when window regains focus (e.g. user started Ollama in terminal)
+    window.addEventListener('focus', verifyOllamaStatus);
+
+    // Periodic poll every 12 seconds to automatically detect when Ollama starts
+    const interval = setInterval(verifyOllamaStatus, 12000);
+
+    return () => {
+      window.removeEventListener('focus', verifyOllamaStatus);
+      clearInterval(interval);
+    };
+  }, [verifyOllamaStatus]);
+
+  // URL Scraping & Extraction Handler
+  const handleExtractFromUrl = async (targetUrl = null) => {
+    const rawUrl = (typeof targetUrl === 'string' && targetUrl.trim()) ? targetUrl.trim() : urlInputText.trim();
+    if (!rawUrl) return;
+
+    if (!isJobUrl(rawUrl)) {
+      setUrlExtractError('Please enter a valid web URL starting with http:// or https://');
+      return;
+    }
+
+    // Immediate abort for known non-job URLs (social media, general news, wikis, etc.)
+    if (isKnownNonJobUrl(rawUrl)) {
+      setIsExtractingUrl(false);
+      setUrlExtractError(INVALID_JOB_URL_ERROR);
+      setExecutionNotice({
+        type: 'warning',
+        message: INVALID_JOB_URL_ERROR,
+      });
+      return;
+    }
+
+    setIsExtractingUrl(true);
+    setUrlExtractError(null);
+    setExecutionNotice({
+      type: 'info',
+      message: 'Extracting clean job description and role details from URL...',
+    });
+
+    try {
+      const result = await scrapeJobUrl(rawUrl);
+      if (result.success && result.text) {
+        setJobDescription(result.text);
+        setUrlInputText('');
+        setShowUrlInput(false);
+        setIsExtractingUrl(false);
+        setUrlExtractError(null);
+        setExecutionNotice({
+          type: 'success',
+          message: `Successfully extracted ${result.wordCount || ''} words from ${result.company || result.title || 'job listing'}. Running Gatekeeper analysis...`,
+        });
+        // Immediately trigger the existing Gatekeeper validation, experience check, and Tech Match pipeline on extracted text
+        await handleAnalyzeJd(result.text);
+      } else {
+        setIsExtractingUrl(false);
+        const errorMsg = result?.error || INVALID_JOB_URL_ERROR;
+        setUrlExtractError(errorMsg);
+        setExecutionNotice({
+          type: 'warning',
+          message: errorMsg,
+        });
+      }
+    } catch (err) {
+      setIsExtractingUrl(false);
+      const errorMsg = INVALID_JOB_URL_ERROR;
+      setUrlExtractError(errorMsg);
+      setExecutionNotice({
+        type: 'warning',
+        message: errorMsg,
+      });
+    }
+  };
+
   // Step 1: Analyze JD (Strict Sanity & Gibberish Interception + Gatekeeper Guardrails + Baseline Scoring + Tech X-Ray Extraction)
-  const handleAnalyzeJd = async () => {
-    if (!jobDescription.trim()) return;
+  const handleAnalyzeJd = async (overrideJdText = null) => {
+    const textToAnalyze = (typeof overrideJdText === 'string' && overrideJdText.trim())
+      ? overrideJdText.trim()
+      : jobDescription.trim();
+
+    if (!textToAnalyze) return;
+
+    // Auto-detect if user entered a bare URL into the main JD box
+    if (!overrideJdText && isJobUrl(textToAnalyze)) {
+      await handleExtractFromUrl(textToAnalyze);
+      return;
+    }
 
     setIsAnalyzing(true);
     setExecutionNotice(null);
@@ -105,11 +239,62 @@ export default function TailoredResumeWorkspace({
     setTechXRayData(null);
     setMissingTechList([]);
     setOptimizedSections(null);
+    setSectionReviewDecisions({});
+    setCustomEdits({});
+    setTailoredProjects([]);
+    setSectionHistory({});
+    setApprovedChangesLog([]);
     onBaselineScoreChange?.(null);
     onTailoredResultChange?.(null);
 
+    // Frontend/Backend Bridge Early Guardrails:
+    // Check specific qualification restrictions (Batch Year, Exclusive Institution) FIRST,
+    // ensuring specific failure reasons bypass generic word count or text validation checks
+    // and pass directly to the UI banner without ever being overwritten.
+    const earlyBatchCheck = evaluateBatchYearEligibility(textToAnalyze, profile);
+    if (earlyBatchCheck.isBlocked) {
+      setIsAnalyzing(false);
+      setGatekeeperResult({
+        success: false,
+        status: 'ABORT',
+        failureReason: earlyBatchCheck.failureReason,
+        reason: earlyBatchCheck.reason,
+        reasoning: earlyBatchCheck.reasoning,
+        engine: 'Deterministic Rule Engine',
+      });
+      return;
+    }
+
+    const earlyTierCheck = evaluateExclusiveInstitutionTier(textToAnalyze, profile);
+    if (earlyTierCheck.isBlocked) {
+      setIsAnalyzing(false);
+      setGatekeeperResult({
+        success: false,
+        status: 'ABORT',
+        failureReason: earlyTierCheck.failureReason,
+        reason: earlyTierCheck.reason,
+        reasoning: earlyTierCheck.reasoning,
+        engine: 'Deterministic Rule Engine',
+      });
+      return;
+    }
+
+    const earlyExpCheck = evaluateExperienceLevel(textToAnalyze);
+    if (earlyExpCheck.isBlocked) {
+      setIsAnalyzing(false);
+      setGatekeeperResult({
+        success: false,
+        status: 'ABORT',
+        failureReason: earlyExpCheck.failureReason,
+        reason: earlyExpCheck.reason,
+        reasoning: earlyExpCheck.reasoning,
+        engine: 'Deterministic Rule Engine',
+      });
+      return;
+    }
+
     const gatekeeperEval = await evaluateJobDescriptionPipeline({
-      rawJdText: jobDescription,
+      rawJdText: textToAnalyze,
       masterProfile: profile,
       model: selectedModel,
     });
@@ -129,7 +314,7 @@ export default function TailoredResumeWorkspace({
 
     // Step 1b: Run Intelligent Tech Extraction Pipeline with Global Dictionary & Anti-Fluff
     const techXRay = await runTechExtractionPipeline({
-      sanitizedJd: gatekeeperEval.cleanedText || jobDescription,
+      sanitizedJd: gatekeeperEval.cleanedText || textToAnalyze,
       masterProfile: profile,
       model: selectedModel,
     });
@@ -138,7 +323,7 @@ export default function TailoredResumeWorkspace({
 
     // Gatekeeper Approved! Synchronize baseline score with techXRay data for 100% consistency
     const synchronizedBaselineScore = calculateBaselineScore({
-      cleanedJdText: gatekeeperEval.cleanedText || jobDescription,
+      cleanedJdText: gatekeeperEval.cleanedText || textToAnalyze,
       masterProfile: profile,
       techXRayData: techXRay,
     });
@@ -165,15 +350,255 @@ export default function TailoredResumeWorkspace({
     });
   };
 
+  // Centralized helper to synchronize AI section review decisions with the approved changes log
+  const syncSectionDecisionsWithLog = (decisionsToSync, optSections = optimizedSections) => {
+    if (!optSections) return;
+    const ts = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+    setApprovedChangesLog((curr) => {
+      let updated = [...curr];
+
+      Object.entries(decisionsToSync).forEach(([secId, decision]) => {
+        const logId = `section_opt_${secId}`;
+        if (decision === 'approved' || decision === 'accept_rewrite') {
+          let entry = null;
+
+          // 1. Summary
+          if (secId === 'summary' && optSections.summary) {
+            const tailoredText = extractTextString(
+              customEdits?.['summary'],
+              customEdits?.['professionalSummary'],
+              optSections.summary.proposedText,
+              optSections.summary.proposed_text,
+              optSections.summary.rewritten_summary,
+              optSections.summary.rewrittenSummary,
+              optSections.summary.text,
+              tailoredResult?.tailoredSummary,
+              optSections.summary.originalText,
+              profile?.professionalSummary,
+              profile?.objective
+            );
+
+            const originalText = extractTextString(
+              optSections.summary.originalText,
+              optSections.summary.original_summary,
+              profile?.professionalSummary,
+              profile?.objective
+            );
+
+            const kws = Array.isArray(optSections.summary.integratedKeywords)
+              ? optSections.summary.integratedKeywords
+              : [];
+
+            const rationale = buildOptimizationRationale({
+              type: 'section_rewrite',
+              category: 'Summary',
+              chipLabel: 'AI Summary Rewrite',
+              instruction: optSections.summary.changes_summary,
+              integratedKeywords: kws,
+              changesSummary: optSections.summary.changes_summary,
+            });
+
+            entry = {
+              id: logId,
+              timestamp: ts,
+              isoTimestamp: new Date().toISOString(),
+              type: 'section_rewrite',
+              category: 'Summary',
+              title: 'Approved Section Rewrite: Professional Summary',
+              roleOrContext: 'Professional Summary / Objective',
+              instruction: optSections.summary.changes_summary || 'Targeted Summary Optimization',
+              chipLabel: 'AI Summary Rewrite',
+              rationale,
+              originalText,
+              tailoredText,
+              status: 'approved',
+              sectionKey: 'summary',
+            };
+          }
+
+          // 2. Experience / Internships
+          else if (secId.startsWith('exp') && optSections.internships) {
+            const item = optSections.internships.find((i) => i.id === secId);
+            const idx = parseInt(secId.replace(/exp[-_]/, ''), 10);
+            const fallbackExp = tailoredResult?.highlightedExperiences?.[idx] || profile?.workExperience?.[idx];
+
+            if (item || fallbackExp) {
+              const comp = item?.company || fallbackExp?.company || 'Experience';
+              const role = item?.title || item?.role || fallbackExp?.title || fallbackExp?.role || 'Intern';
+
+              const tailoredText = extractTextString(
+                customEdits?.[comp],
+                customEdits?.[secId],
+                item?.proposedBullets,
+                item?.proposed_bullets,
+                item?.rewritten_bullets,
+                item?.bulletPoints,
+                fallbackExp?.bulletPoints,
+                item?.originalBullets,
+                profile?.workExperience?.[idx]?.bulletPoints
+              );
+
+              const originalText = extractTextString(
+                item?.originalBullets,
+                item?.original_bullets,
+                profile?.workExperience?.[idx]?.bulletPoints,
+                fallbackExp?.bulletPoints
+              );
+
+              const kws = Array.isArray(item?.integratedKeywords) ? item.integratedKeywords : [];
+
+              const rationale = buildOptimizationRationale({
+                type: 'section_rewrite',
+                category: 'Experience',
+                chipLabel: 'AI Experience Rewrite',
+                instruction: item?.changes_summary,
+                integratedKeywords: kws,
+                roleOrContext: `${comp} — ${role}`,
+                changesSummary: item?.changes_summary,
+              });
+
+              entry = {
+                id: logId,
+                timestamp: ts,
+                isoTimestamp: new Date().toISOString(),
+                type: 'section_rewrite',
+                category: 'Experience',
+                title: `Approved Experience Rewrite: ${comp}`,
+                roleOrContext: `${comp} — ${role}`,
+                instruction: item?.changes_summary || 'Targeted Experience Bullet Optimization',
+                chipLabel: 'AI Experience Rewrite',
+                rationale,
+                originalText,
+                tailoredText,
+                status: 'approved',
+                sectionKey: secId,
+              };
+            }
+          }
+
+          // 3. Projects
+          else if (secId.startsWith('proj') && optSections.projects) {
+            const item = optSections.projects.find((p) => p.id === secId);
+            const idx = parseInt(secId.replace(/proj[-_]/, ''), 10);
+            const fallbackProj = (tailoredProjects && tailoredProjects[idx]) || tailoredResult?.highlightedProjects?.[idx] || profile?.projects?.[idx];
+
+            if (item || fallbackProj) {
+              const projName = item?.name || fallbackProj?.name || 'Project';
+
+              const tailoredText = extractTextString(
+                customEdits?.[projName],
+                customEdits?.[secId],
+                item?.proposedDescription,
+                item?.proposed_description,
+                item?.rewritten_description,
+                item?.description,
+                tailoredProjects?.[idx]?.description,
+                fallbackProj?.description,
+                item?.originalDescription,
+                profile?.projects?.[idx]?.description
+              );
+
+              const originalText = extractTextString(
+                item?.originalDescription,
+                item?.original_description,
+                profile?.projects?.[idx]?.description,
+                fallbackProj?.description
+              );
+
+              const kws = Array.isArray(item?.integratedKeywords) ? item.integratedKeywords : [];
+
+              const rationale = buildOptimizationRationale({
+                type: 'section_rewrite',
+                category: 'Projects',
+                chipLabel: 'AI Project Rewrite',
+                instruction: item?.changes_summary,
+                integratedKeywords: kws,
+                roleOrContext: projName,
+                changesSummary: item?.changes_summary,
+              });
+
+              entry = {
+                id: logId,
+                timestamp: ts,
+                isoTimestamp: new Date().toISOString(),
+                type: 'section_rewrite',
+                category: 'Projects',
+                title: `Approved Project Rewrite: ${projName}`,
+                roleOrContext: projName,
+                instruction: item?.changes_summary || 'Targeted Project Description Optimization',
+                chipLabel: 'AI Project Rewrite',
+                rationale,
+                originalText,
+                tailoredText,
+                status: 'approved',
+                sectionKey: secId,
+              };
+            }
+          }
+
+          if (entry) {
+            updated = [entry, ...updated.filter((i) => i.id !== logId)];
+          }
+        } else {
+          updated = updated.filter((i) => i.id !== logId);
+        }
+      });
+
+      return updated;
+    });
+  };
+
   // Human-in-the-Loop Toggle Handlers
   const handleToggleApprove = (techId, isApproved) => {
+    let toggledTech = null;
     setMissingTechList((prev) => {
-      const updated = prev.map((item) => (item.id === techId ? { ...item, approved: isApproved } : item));
+      const updated = prev.map((item) => {
+        if (item.id === techId) {
+          toggledTech = { ...item, approved: isApproved };
+          return toggledTech;
+        }
+        return item;
+      });
       const approvedNames = updated.filter((t) => t.approved).map((t) => t.name);
       const rejectedNames = updated.filter((t) => !t.approved).map((t) => t.name);
       syncTailoredWithApprovals(approvedNames, rejectedNames);
       return updated;
     });
+
+    if (toggledTech) {
+      const skillId = `skill_${toggledTech.name.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+      if (isApproved) {
+        const rationale = buildOptimizationRationale({
+          type: 'skill_addition',
+          category: 'Skills',
+          chipLabel: toggledTech.name,
+          instruction: 'Approved from Missing Tech X-Ray',
+          roleOrContext: toggledTech.name,
+        });
+
+        const entry = {
+          id: skillId,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          isoTimestamp: new Date().toISOString(),
+          type: 'skill_addition',
+          category: 'Skills',
+          title: `Added Skill: ${toggledTech.name}`,
+          roleOrContext: `Technical Skills Matrix (${toggledTech.category || 'Missing Tech'})`,
+          instruction: 'Approved from Missing Tech X-Ray',
+          chipLabel: toggledTech.name,
+          rationale,
+          originalText: `Skill "${toggledTech.name}" was not originally listed in master technical skills.`,
+          tailoredText: `Approved and incorporated "${toggledTech.name}" into technical skills (${toggledTech.category || 'Skills'}).`,
+          status: 'approved',
+          skillName: toggledTech.name,
+          skillCategory: toggledTech.category || 'Skills',
+        };
+        setApprovedChangesLog((curr) => [entry, ...curr.filter((item) => item.id !== skillId)]);
+      } else {
+        setApprovedChangesLog((curr) => curr.filter((item) => item.id !== skillId));
+      }
+    }
   };
 
   const handleApproveAll = () => {
@@ -181,6 +606,37 @@ export default function TailoredResumeWorkspace({
       const updated = prev.map((item) => ({ ...item, approved: true }));
       const approvedNames = updated.map((t) => t.name);
       syncTailoredWithApprovals(approvedNames, []);
+
+      // Batch log all approved skills
+      const ts = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      const newEntries = updated.map((t) => ({
+        id: `skill_${t.name.toLowerCase().replace(/[^a-z0-9]/g, '_')}`,
+        timestamp: ts,
+        isoTimestamp: new Date().toISOString(),
+        type: 'skill_addition',
+        category: 'Skills',
+        title: `Added Skill: ${t.name}`,
+        roleOrContext: `Technical Skills Matrix (${t.category || 'Missing Tech'})`,
+        instruction: 'Approved from Missing Tech X-Ray',
+        chipLabel: t.name,
+        rationale: buildOptimizationRationale({
+          type: 'skill_addition',
+          category: 'Skills',
+          chipLabel: t.name,
+          instruction: 'Approved from Missing Tech X-Ray',
+        }),
+        originalText: `Skill "${t.name}" was not originally listed in master technical skills.`,
+        tailoredText: `Approved and incorporated "${t.name}" into technical skills (${t.category || 'Skills'}).`,
+        status: 'approved',
+        skillName: t.name,
+        skillCategory: t.category || 'Skills',
+      }));
+
+      setApprovedChangesLog((curr) => {
+        const nonSkills = curr.filter((i) => i.type !== 'skill_addition');
+        return [...newEntries, ...nonSkills];
+      });
+
       return updated;
     });
   };
@@ -190,36 +646,63 @@ export default function TailoredResumeWorkspace({
       const updated = prev.map((item) => ({ ...item, approved: false }));
       const rejectedNames = updated.map((t) => t.name);
       syncTailoredWithApprovals([], rejectedNames);
+
+      setApprovedChangesLog((curr) => curr.filter((i) => i.type !== 'skill_addition'));
       return updated;
     });
+  };
+
+  // Handle live section review decision changes (Approve vs Keep Original)
+  const handleSectionDecisionChange = (id, status, updatedDecisions) => {
+    const nextDecisions = updatedDecisions || { ...sectionReviewDecisions, [id]: status };
+    setSectionReviewDecisions(nextDecisions);
+
+    const approvedMissingTech = missingTechList.filter((t) => t.approved).map((t) => t.name);
+    const rejectedMissingTech = missingTechList.filter((t) => !t.approved).map((t) => t.name);
+
+    // Live data-binding: Immediately compile updated state respecting user approval / rejection choices
+    const compiled = compileFinalTailoredResume({
+      masterProfile: profile,
+      tailoredResult,
+      optimizedSections,
+      sectionDecisions: nextDecisions,
+      approvedMissingTech,
+      rejectedMissingTech,
+      customEdits,
+      tailoredProjects,
+    });
+
+    setTailoredResult(compiled);
+    onTailoredResultChange?.(compiled);
+
+    // Synchronize section decision with centralized optimization log
+    syncSectionDecisionsWithLog({ [id]: status });
   };
 
   // Apply individual or bulk section decisions from SectionDiffPreview
   const handleApplyOptimizedSections = (finalizedPayload) => {
     if (!finalizedPayload) return;
 
-    setTailoredResult((prev) => {
-      const current = prev || {};
-      const updated = {
-        ...current,
-        tailoredSummary: finalizedPayload.summary || current.tailoredSummary,
-        highlightedExperiences: (finalizedPayload.internships || []).map((item) => ({
-          company: item.company,
-          title: item.title,
-          period: item.period,
-          location: item.location,
-          bulletPoints: item.finalBullets || item.originalBullets || [],
-        })),
-        highlightedProjects: (finalizedPayload.projects || []).map((item) => ({
-          name: item.name,
-          techStack: item.techStack,
-          description: item.finalDescription || item.originalDescription,
-        })),
-      };
-      onTailoredResultChange?.(updated);
-      return updated;
+    const nextDecisions = finalizedPayload.decisions || sectionReviewDecisions;
+    setSectionReviewDecisions(nextDecisions);
+
+    const approvedMissingTech = missingTechList.filter((t) => t.approved).map((t) => t.name);
+    const rejectedMissingTech = missingTechList.filter((t) => !t.approved).map((t) => t.name);
+
+    const compiled = compileFinalTailoredResume({
+      masterProfile: profile,
+      tailoredResult,
+      optimizedSections,
+      sectionDecisions: nextDecisions,
+      approvedMissingTech,
+      rejectedMissingTech,
+      customEdits,
+      tailoredProjects,
     });
 
+    setTailoredResult(compiled);
+    onTailoredResultChange?.(compiled);
+    syncSectionDecisionsWithLog(nextDecisions, finalizedPayload.optimizedSections || optimizedSections);
     setExecutionNotice('Section optimization review choices successfully applied to tailored resume draft.');
   };
 
@@ -240,6 +723,12 @@ export default function TailoredResumeWorkspace({
     const approvedMissingTech = missingTechList.filter((t) => t.approved).map((t) => t.name);
     const rejectedMissingTech = missingTechList.filter((t) => !t.approved).map((t) => t.name);
 
+    // Resolve active model from available models if possible
+    const effectiveModel =
+      availableModels.length > 0
+        ? (availableModels.some((m) => m.name === selectedModel) ? selectedModel : availableModels[0].name)
+        : selectedModel || DEFAULT_MODEL;
+
     try {
       // 1. Single batched optimization targeting ONLY the 3 dynamic sections (Summary, Internships, Projects)
       const sectionOptimization = await batchOptimizeDynamicSectionsPipeline({
@@ -248,10 +737,23 @@ export default function TailoredResumeWorkspace({
         targetKeywords: techXRayData?.matchedTech?.map((t) => t.name) || [],
         approvedMissingTech,
         rejectedMissingTech,
-        model: selectedModel,
+        model: effectiveModel,
       });
 
       setOptimizedSections(sectionOptimization.data);
+
+      // Initialize approval decisions: rewrites marked approved, bypassed kept original
+      const initialDecisions = {
+        summary: sectionOptimization.data?.summary?.needs_rewrite ? 'approved' : 'bypassed',
+      };
+      (sectionOptimization.data?.internships || []).forEach((item) => {
+        initialDecisions[item.id] = item.needs_rewrite ? 'approved' : 'bypassed';
+      });
+      (sectionOptimization.data?.projects || []).forEach((item) => {
+        initialDecisions[item.id] = item.needs_rewrite ? 'approved' : 'bypassed';
+      });
+      setSectionReviewDecisions(initialDecisions);
+      syncSectionDecisionsWithLog(initialDecisions, sectionOptimization.data);
 
       // 2. Full tailoring pipeline execution
       const response = await tailorResumePipeline({
@@ -259,35 +761,22 @@ export default function TailoredResumeWorkspace({
         jobDescription: gatekeeperResult.cleanedText || jobDescription,
         approvedMissingTech,
         rejectedMissingTech,
-        model: selectedModel,
+        model: effectiveModel,
       });
 
-      // Synchronize tailored output with optimized dynamic sections
-      if (sectionOptimization.data && response.data) {
-        if (sectionOptimization.data.summary?.proposedText) {
-          response.data.tailoredSummary = sectionOptimization.data.summary.proposedText;
-        }
-        if (Array.isArray(sectionOptimization.data.internships)) {
-          response.data.highlightedExperiences = sectionOptimization.data.internships.map((item) => ({
-            company: item.company,
-            title: item.title,
-            period: item.period,
-            location: item.location,
-            bulletPoints: item.proposedBullets || item.originalBullets || [],
-          }));
-        }
-        if (Array.isArray(sectionOptimization.data.projects)) {
-          response.data.highlightedProjects = sectionOptimization.data.projects.map((proj) => ({
-            name: proj.name,
-            techStack: proj.techStack,
-            description: proj.proposedDescription || proj.originalDescription,
-          }));
-        }
-      }
+      // Synchronize tailored output with compiled dynamic sections & review decisions
+      const initialCompiled = compileFinalTailoredResume({
+        masterProfile: profile,
+        tailoredResult: response.data,
+        optimizedSections: sectionOptimization.data,
+        sectionDecisions: initialDecisions,
+        approvedMissingTech,
+        rejectedMissingTech,
+      });
 
       clearInterval(stepInterval);
-      setTailoredResult(response.data);
-      onTailoredResultChange?.(response.data);
+      setTailoredResult(initialCompiled);
+      onTailoredResultChange?.(initialCompiled);
       setIsJdCollapsed(true);
       setIsScoreExpanded(false);
       if (response.offlineNotice) {
@@ -295,7 +784,7 @@ export default function TailoredResumeWorkspace({
       }
       if (autoTransitionToPreview && onPreviewTailoredResume) {
         onPreviewTailoredResume({
-          tailoredResult: response.data,
+          tailoredResult: initialCompiled,
           baselineScore,
         });
       }
@@ -308,7 +797,7 @@ export default function TailoredResumeWorkspace({
     }
   };
 
-  // Step 3: Clear Final Action Handler -> Compiles all state, approved tech, & custom edits, then transitions to Step 4
+  // Step 3: Clear Final Action Handler -> Compiles all state, approved tech, & custom edits, strictly respecting user approval / rejection choices
   const handleGenerateFinalTailoredResume = () => {
     if (!tailoredResult) return;
 
@@ -316,13 +805,17 @@ export default function TailoredResumeWorkspace({
     const approvedMissingTech = missingTechList.filter((t) => t.approved).map((t) => t.name);
     const rejectedMissingTech = missingTechList.filter((t) => !t.approved).map((t) => t.name);
 
-    // Compile latest state, verified approved missing tech, and custom instruction rewrites
-    const compiledResult = {
-      ...tailoredResult,
+    // Compile latest state strictly respecting user approval / rejection choices AND custom user edits
+    const compiledResult = compileFinalTailoredResume({
+      masterProfile: profile,
+      tailoredResult,
+      optimizedSections,
+      sectionDecisions: sectionReviewDecisions,
       approvedMissingTech,
       rejectedMissingTech,
-      compiledAt: new Date().toISOString(),
-    };
+      customEdits,
+      tailoredProjects,
+    });
 
     setTailoredResult(compiledResult);
     onTailoredResultChange?.(compiledResult);
@@ -336,20 +829,103 @@ export default function TailoredResumeWorkspace({
     }
   };
 
+  // Dynamic Document Export Pipeline: Single-Page PDF & DOCX with embedded contact icons
+  const handleDownloadPdf = () => {
+    if (!tailoredResult) return;
+    try {
+      setIsExportingPdf(true);
+      const approvedMissingTech = missingTechList.filter((t) => t.approved).map((t) => t.name);
+      const rejectedMissingTech = missingTechList.filter((t) => !t.approved).map((t) => t.name);
+
+      const compiledResult = compileFinalTailoredResume({
+        masterProfile: profile,
+        tailoredResult,
+        optimizedSections,
+        sectionDecisions: sectionReviewDecisions,
+        approvedMissingTech,
+        rejectedMissingTech,
+        customEdits,
+        tailoredProjects,
+      });
+
+      exportTailoredPdf({
+        profile,
+        tailoredResult: compiledResult,
+        filename: 'Tailored_Resume.pdf',
+      });
+
+      setExportNotice({
+        type: 'success',
+        message: 'Tailored PDF downloaded successfully (Single-Page Guaranteed with Embedded Contact Icons).',
+      });
+      setTimeout(() => setExportNotice(null), 4000);
+    } catch (err) {
+      console.error('PDF Export Error:', err);
+      setExportNotice({
+        type: 'error',
+        message: 'Failed to generate tailored PDF. Please try again.',
+      });
+      setTimeout(() => setExportNotice(null), 4000);
+    } finally {
+      setIsExportingPdf(false);
+    }
+  };
+
+  const handleDownloadDocx = async () => {
+    if (!tailoredResult) return;
+    try {
+      setIsExportingDocx(true);
+      const approvedMissingTech = missingTechList.filter((t) => t.approved).map((t) => t.name);
+      const rejectedMissingTech = missingTechList.filter((t) => !t.approved).map((t) => t.name);
+
+      const compiledResult = compileFinalTailoredResume({
+        masterProfile: profile,
+        tailoredResult,
+        optimizedSections,
+        sectionDecisions: sectionReviewDecisions,
+        approvedMissingTech,
+        rejectedMissingTech,
+        customEdits,
+        tailoredProjects,
+      });
+
+      await exportTailoredDocx({
+        profile,
+        tailoredResult: compiledResult,
+        filename: 'Tailored_Resume.docx',
+      });
+
+      setExportNotice({
+        type: 'success',
+        message: 'Tailored Word (.docx) document downloaded with native styling & embedded contact icons.',
+      });
+      setTimeout(() => setExportNotice(null), 4000);
+    } catch (err) {
+      console.error('DOCX Export Error:', err);
+      setExportNotice({
+        type: 'error',
+        message: 'Failed to generate tailored DOCX. Please try again.',
+      });
+      setTimeout(() => setExportNotice(null), 4000);
+    } finally {
+      setIsExportingDocx(false);
+    }
+  };
+
 
   // Apply targeted custom instruction to a specific section card with Undo History stack
-  const handleApplySectionInstruction = (sectionKey, newText) => {
+  const handleApplySectionInstruction = (sectionKey, newText, meta = {}) => {
     if (!tailoredResult) return;
 
     // 1. Capture current text to push onto undo history stack
     let previousContent = null;
-    if (sectionKey === 'summary') {
+    if (sectionKey === 'summary' || sectionKey === 'professionalSummary') {
       previousContent = tailoredResult.tailoredSummary;
-    } else if (sectionKey.startsWith('exp-')) {
-      const idx = parseInt(sectionKey.replace('exp-', ''), 10);
+    } else if (sectionKey.startsWith('exp-') || sectionKey.startsWith('exp_')) {
+      const idx = parseInt(sectionKey.replace(/exp[-_]/, ''), 10);
       previousContent = [...(tailoredResult.highlightedExperiences?.[idx]?.bulletPoints || [])];
-    } else if (sectionKey.startsWith('proj-')) {
-      const idx = parseInt(sectionKey.replace('proj-', ''), 10);
+    } else if (sectionKey.startsWith('proj-') || sectionKey.startsWith('proj_')) {
+      const idx = parseInt(sectionKey.replace(/proj[-_]/, ''), 10);
       previousContent = tailoredResult.highlightedProjects?.[idx]?.description || '';
     }
 
@@ -360,51 +936,186 @@ export default function TailoredResumeWorkspace({
       }));
     }
 
-    // 2. Direct State Binding: updates tailoredResult directly to ensure exact variable sync
-    setTailoredResult((prev) => {
-      if (!prev) return prev;
-      let nextResult = prev;
-      if (sectionKey === 'summary') {
-        nextResult = {
-          ...prev,
-          tailoredSummary: typeof newText === 'string' ? newText : String(newText || ''),
+    // 2. Immediately save newly generated text to active section override state (customEdits & tailoredProjects)
+    const nextCustomEdits = {
+      ...customEdits,
+      [sectionKey]: newText,
+    };
+    if (sectionKey.includes('-')) {
+      nextCustomEdits[sectionKey.replace('-', '_')] = newText;
+    } else if (sectionKey.includes('_')) {
+      nextCustomEdits[sectionKey.replace('_', '-')] = newText;
+    }
+
+    let updatedProjects = (tailoredProjects && tailoredProjects.length > 0)
+      ? [...tailoredProjects]
+      : [...(tailoredResult.highlightedProjects || [])];
+
+    let updatedExperiences = [...(tailoredResult.highlightedExperiences || [])];
+
+    if (sectionKey === 'summary' || sectionKey === 'professionalSummary') {
+      nextCustomEdits['summary'] = newText;
+      nextCustomEdits['professionalSummary'] = newText;
+    } else if (sectionKey.startsWith('proj-') || sectionKey.startsWith('proj_')) {
+      const idx = parseInt(sectionKey.replace(/proj[-_]/, ''), 10);
+      if (updatedProjects[idx]) {
+        const desc = typeof newText === 'string' ? newText : String(newText || '');
+        updatedProjects[idx] = {
+          ...updatedProjects[idx],
+          description: desc,
         };
-      } else if (sectionKey.startsWith('exp-')) {
-        const idx = parseInt(sectionKey.replace('exp-', ''), 10);
-        const updatedExperiences = [...(prev.highlightedExperiences || [])];
-        if (updatedExperiences[idx]) {
-          let updatedBullets;
-          if (Array.isArray(newText)) {
-            updatedBullets = newText;
-          } else if (typeof newText === 'string') {
-            updatedBullets = newText
-              .split('\n')
-              .map((b) => b.replace(/^[-•*]\s*/, '').trim())
-              .filter(Boolean);
-          } else {
-            updatedBullets = updatedExperiences[idx].bulletPoints;
-          }
-          updatedExperiences[idx] = {
-            ...updatedExperiences[idx],
-            bulletPoints: updatedBullets,
-          };
+        const projName = updatedProjects[idx].name;
+        if (projName) {
+          nextCustomEdits[projName] = desc;
         }
-        nextResult = { ...prev, highlightedExperiences: updatedExperiences };
-      } else if (sectionKey.startsWith('proj-')) {
-        const idx = parseInt(sectionKey.replace('proj-', ''), 10);
-        const updatedProjects = [...(prev.highlightedProjects || [])];
-        if (updatedProjects[idx]) {
-          updatedProjects[idx] = {
-            ...updatedProjects[idx],
-            description: typeof newText === 'string' ? newText : String(newText || ''),
-          };
-        }
-        nextResult = { ...prev, highlightedProjects: updatedProjects };
       }
-      onTailoredResultChange?.(nextResult);
-      return nextResult;
+      setTailoredProjects(updatedProjects);
+    } else if (sectionKey.startsWith('exp-') || sectionKey.startsWith('exp_')) {
+      const idx = parseInt(sectionKey.replace(/exp[-_]/, ''), 10);
+      if (updatedExperiences[idx]) {
+        let updatedBullets;
+        if (Array.isArray(newText)) {
+          updatedBullets = newText;
+        } else if (typeof newText === 'string') {
+          updatedBullets = newText
+            .split('\n')
+            .map((b) => b.replace(/^[-•*]\s*/, '').trim())
+            .filter(Boolean);
+        } else {
+          updatedBullets = updatedExperiences[idx].bulletPoints;
+        }
+        updatedExperiences[idx] = {
+          ...updatedExperiences[idx],
+          bulletPoints: updatedBullets,
+        };
+        const compName = updatedExperiences[idx].company;
+        if (compName) {
+          nextCustomEdits[compName] = updatedBullets;
+        }
+      }
+    }
+
+    setCustomEdits(nextCustomEdits);
+
+    // 3. Update review decisions so the newly edited section is marked approved
+    const expId = (sectionKey.startsWith('exp-') || sectionKey.startsWith('exp_'))
+      ? `exp_${parseInt(sectionKey.replace(/exp[-_]/, ''), 10)}`
+      : null;
+    const projId = (sectionKey.startsWith('proj-') || sectionKey.startsWith('proj_'))
+      ? `proj_${parseInt(sectionKey.replace(/proj[-_]/, ''), 10)}`
+      : null;
+    const decisionKey = expId || projId || sectionKey;
+
+    const nextDecisions = {
+      ...sectionReviewDecisions,
+      [decisionKey]: 'approved',
+      [sectionKey]: 'approved',
+    };
+    setSectionReviewDecisions(nextDecisions);
+
+    // 4. Immediately bind into compiled state
+    const approvedMissingTech = missingTechList.filter((t) => t.approved).map((t) => t.name);
+    const rejectedMissingTech = missingTechList.filter((t) => !t.approved).map((t) => t.name);
+
+    const baseTailored = {
+      ...tailoredResult,
+      tailoredSummary: (sectionKey === 'summary' || sectionKey === 'professionalSummary')
+        ? (typeof newText === 'string' ? newText : String(newText || ''))
+        : tailoredResult.tailoredSummary,
+      highlightedExperiences: updatedExperiences,
+      highlightedProjects: updatedProjects,
+      tailoredProjects: updatedProjects,
+      customEdits: nextCustomEdits,
+    };
+
+    const compiled = compileFinalTailoredResume({
+      masterProfile: profile,
+      tailoredResult: baseTailored,
+      optimizedSections,
+      sectionDecisions: nextDecisions,
+      approvedMissingTech,
+      rejectedMissingTech,
+      customEdits: nextCustomEdits,
+      tailoredProjects: updatedProjects,
     });
+
+    setTailoredResult(compiled);
+    onTailoredResultChange?.(compiled);
+
+    // 5. Centralized Audit Logging for User-Approved Custom Instructions & Bullet Rewrites
+    let category = 'General';
+    let roleOrContext = '';
+    let itemTitle = 'Custom Instruction Applied';
+
+    if (sectionKey === 'summary' || sectionKey === 'professionalSummary') {
+      category = 'Summary';
+      roleOrContext = 'Professional Summary / Objective';
+      itemTitle = meta?.instruction ? `Summary: "${meta.instruction}"` : 'Tailored Professional Summary';
+    } else if (sectionKey.startsWith('exp-') || sectionKey.startsWith('exp_')) {
+      const idx = parseInt(sectionKey.replace(/exp[-_]/, ''), 10);
+      const expItem = tailoredResult.highlightedExperiences?.[idx] || profile?.workExperience?.[idx] || profile?.internships?.[idx];
+      category = 'Experience';
+      const comp = expItem?.company || 'Experience';
+      const role = expItem?.role || expItem?.title || 'Intern';
+      roleOrContext = `${comp} — ${role}`;
+      itemTitle = meta?.instruction ? `Experience: "${meta.instruction}"` : `Tailored Bullet: ${comp}`;
+    } else if (sectionKey.startsWith('proj-') || sectionKey.startsWith('proj_')) {
+      const idx = parseInt(sectionKey.replace(/proj[-_]/, ''), 10);
+      const projItem = (tailoredProjects && tailoredProjects[idx]) || tailoredResult.highlightedProjects?.[idx] || profile?.projects?.[idx];
+      category = 'Projects';
+      const projName = projItem?.name || 'Project';
+      roleOrContext = projName;
+      itemTitle = meta?.instruction ? `Project: "${meta.instruction}"` : `Tailored Project: ${projName}`;
+    }
+
+    const appliedInstruction = meta?.instruction || 'Custom instruction';
+
+    const tailoredText = extractTextString(
+      newText,
+      nextCustomEdits[sectionKey],
+      (sectionKey === 'summary' || sectionKey === 'professionalSummary') ? baseTailored.tailoredSummary : null,
+      (sectionKey.startsWith('exp') ? updatedExperiences[parseInt(sectionKey.replace(/exp[-_]/, ''), 10)]?.bulletPoints : null),
+      (sectionKey.startsWith('proj') ? updatedProjects[parseInt(sectionKey.replace(/proj[-_]/, ''), 10)]?.description : null)
+    );
+
+    const originalText = extractTextString(
+      previousContent,
+      meta?.previousText,
+      (sectionKey === 'summary' || sectionKey === 'professionalSummary') ? (profile?.professionalSummary || profile?.objective) : null,
+      (sectionKey.startsWith('exp') ? profile?.workExperience?.[parseInt(sectionKey.replace(/exp[-_]/, ''), 10)]?.bulletPoints : null),
+      (sectionKey.startsWith('proj') ? profile?.projects?.[parseInt(sectionKey.replace(/proj[-_]/, ''), 10)]?.description : null)
+    );
+
+    const rationale = buildOptimizationRationale({
+      type: 'custom_instruction',
+      category,
+      instruction: appliedInstruction,
+      chipLabel: appliedInstruction,
+      roleOrContext,
+    });
+
+    const logEntry = {
+      id: `instruction_${sectionKey}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      isoTimestamp: new Date().toISOString(),
+      type: 'custom_instruction',
+      category,
+      title: itemTitle,
+      roleOrContext,
+      instruction: appliedInstruction,
+      chipLabel: appliedInstruction,
+      rationale,
+      originalText,
+      tailoredText,
+      status: 'approved',
+      sectionKey,
+    };
+
+    setApprovedChangesLog((curr) => [logEntry, ...curr]);
   };
+
+  // Alias for custom instruction handler
+  const handleApplyCustomInstruction = handleApplySectionInstruction;
 
   // Revert targeted section card to previous version from undo history stack
   const handleRevertSectionInstruction = (sectionKey) => {
@@ -412,41 +1123,102 @@ export default function TailoredResumeWorkspace({
     if (stack.length === 0) return;
 
     const previousContent = stack[stack.length - 1];
+    const remainingStack = stack.slice(0, -1);
     setSectionHistory((prev) => ({
       ...prev,
-      [sectionKey]: (prev[sectionKey] || []).slice(0, -1),
+      [sectionKey]: remainingStack,
     }));
 
-    // Direct State Binding: restores previous version directly into tailoredResult
-    setTailoredResult((prev) => {
-      if (!prev) return prev;
-      let nextResult = prev;
-      if (sectionKey === 'summary') {
-        nextResult = { ...prev, tailoredSummary: previousContent };
-      } else if (sectionKey.startsWith('exp-')) {
-        const idx = parseInt(sectionKey.replace('exp-', ''), 10);
-        const updatedExperiences = [...(prev.highlightedExperiences || [])];
-        if (updatedExperiences[idx]) {
-          updatedExperiences[idx] = {
-            ...updatedExperiences[idx],
-            bulletPoints: previousContent,
-          };
-        }
-        nextResult = { ...prev, highlightedExperiences: updatedExperiences };
-      } else if (sectionKey.startsWith('proj-')) {
-        const idx = parseInt(sectionKey.replace('proj-', ''), 10);
-        const updatedProjects = [...(prev.highlightedProjects || [])];
-        if (updatedProjects[idx]) {
-          updatedProjects[idx] = {
-            ...updatedProjects[idx],
-            description: previousContent,
-          };
-        }
-        nextResult = { ...prev, highlightedProjects: updatedProjects };
+    // Update customEdits on revert
+    const nextCustomEdits = { ...customEdits };
+    const altKey = sectionKey.includes('-')
+      ? sectionKey.replace('-', '_')
+      : (sectionKey.includes('_') ? sectionKey.replace('_', '-') : sectionKey);
+
+    if (remainingStack.length > 0) {
+      nextCustomEdits[sectionKey] = previousContent;
+      nextCustomEdits[altKey] = previousContent;
+    } else {
+      delete nextCustomEdits[sectionKey];
+      delete nextCustomEdits[altKey];
+      if (sectionKey === 'summary' || sectionKey === 'professionalSummary') {
+        delete nextCustomEdits.summary;
+        delete nextCustomEdits.professionalSummary;
       }
-      onTailoredResultChange?.(nextResult);
-      return nextResult;
+    }
+
+    let updatedProjects = [...(tailoredProjects && tailoredProjects.length > 0 ? tailoredProjects : (tailoredResult?.highlightedProjects || []))];
+    let updatedExperiences = [...(tailoredResult?.highlightedExperiences || [])];
+
+    if (sectionKey.startsWith('proj-') || sectionKey.startsWith('proj_')) {
+      const idx = parseInt(sectionKey.replace(/proj[-_]/, ''), 10);
+      if (updatedProjects[idx]) {
+        updatedProjects[idx] = {
+          ...updatedProjects[idx],
+          description: previousContent,
+        };
+        const projName = updatedProjects[idx].name;
+        if (remainingStack.length === 0 && projName) {
+          delete nextCustomEdits[projName];
+        } else if (projName) {
+          nextCustomEdits[projName] = previousContent;
+        }
+      }
+      setTailoredProjects(updatedProjects);
+    } else if (sectionKey.startsWith('exp-') || sectionKey.startsWith('exp_')) {
+      const idx = parseInt(sectionKey.replace(/exp[-_]/, ''), 10);
+      if (updatedExperiences[idx]) {
+        updatedExperiences[idx] = {
+          ...updatedExperiences[idx],
+          bulletPoints: previousContent,
+        };
+        const compName = updatedExperiences[idx].company;
+        if (remainingStack.length === 0 && compName) {
+          delete nextCustomEdits[compName];
+        } else if (compName) {
+          nextCustomEdits[compName] = previousContent;
+        }
+      }
+    }
+
+    setCustomEdits(nextCustomEdits);
+
+    const approvedMissingTech = missingTechList.filter((t) => t.approved).map((t) => t.name);
+    const rejectedMissingTech = missingTechList.filter((t) => !t.approved).map((t) => t.name);
+
+    const baseTailored = {
+      ...tailoredResult,
+      tailoredSummary: (sectionKey === 'summary' || sectionKey === 'professionalSummary')
+        ? previousContent
+        : tailoredResult?.tailoredSummary,
+      highlightedExperiences: updatedExperiences,
+      highlightedProjects: updatedProjects,
+      tailoredProjects: updatedProjects,
+      customEdits: nextCustomEdits,
+    };
+
+    const compiled = compileFinalTailoredResume({
+      masterProfile: profile,
+      tailoredResult: baseTailored,
+      optimizedSections,
+      sectionDecisions: sectionReviewDecisions,
+      approvedMissingTech,
+      rejectedMissingTech,
+      customEdits: nextCustomEdits,
+      tailoredProjects: updatedProjects,
     });
+
+    // Remove the most recent custom instruction for this sectionKey from approvedChangesLog
+    setApprovedChangesLog((curr) => {
+      const idx = curr.findIndex((item) => item.type === 'custom_instruction' && item.sectionKey === sectionKey);
+      if (idx !== -1) {
+        return [...curr.slice(0, idx), ...curr.slice(idx + 1)];
+      }
+      return curr;
+    });
+
+    setTailoredResult(compiled);
+    onTailoredResultChange?.(compiled);
   };
 
   // Copy Tailored Resume to Clipboard
@@ -515,20 +1287,27 @@ ${tailoredResult.highlightedProjects
         {/* Right Toolbar Actions */}
         <div className="flex items-center gap-2">
           {/* Ollama Status Pill */}
-          <div
-            className={`hidden sm:flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-mono border ${
+          <button
+            type="button"
+            onClick={verifyOllamaStatus}
+            title={
               ollamaOnline
-                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
-                : 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                ? 'Ollama is Online (Click to re-verify connection)'
+                : 'Ollama is Offline (Click to re-check connection)'
+            }
+            className={`hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-mono border transition-all cursor-pointer ${
+              ollamaOnline
+                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/25'
+                : 'bg-rose-500/15 text-rose-300 border-rose-500/30 hover:bg-rose-500/25'
             }`}
           >
             <div
               className={`w-1.5 h-1.5 rounded-full ${
-                ollamaOnline ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'
+                ollamaOnline ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'
               }`}
             />
-            <span>{ollamaOnline ? 'Ollama: Online' : 'Ollama: Standby'}</span>
-          </div>
+            <span>{ollamaOnline ? 'Ollama: Online' : 'Ollama: Offline'}</span>
+          </button>
 
           {/* Model Selector if models available */}
           {availableModels.length > 0 && (
@@ -554,11 +1333,37 @@ ${tailoredResult.highlightedProjects
             <Eye className="w-3.5 h-3.5 text-indigo-400" />
             <span className="hidden md:inline text-[11px]">Base Profile</span>
           </button>
+
+          {/* Optimization Log Tab Switcher */}
+          <button
+            type="button"
+            onClick={() => {
+              if (onNavigateToStage) {
+                onNavigateToStage('log');
+              } else {
+                setWorkspaceTab(workspaceTab === 'log' ? 'steps' : 'log');
+              }
+            }}
+            title="View Optimization Log & Approved Changes"
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border transition-all cursor-pointer ${
+              workspaceTab === 'log'
+                ? 'bg-indigo-600 text-white border-indigo-500 shadow-sm'
+                : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-700/70 hover:text-white'
+            }`}
+          >
+            <ClipboardList className="w-3.5 h-3.5 text-indigo-400" />
+            <span className="hidden sm:inline">Optimization Log</span>
+            {approvedChangesLog.length > 0 && (
+              <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                {approvedChangesLog.length}
+              </span>
+            )}
+          </button>
         </div>
       </div>
 
       {/* Main Scrollable Workspace */}
-      <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3">
+      <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3 flex flex-col justify-start">
         {/* Logical Workflow Progression Bar */}
         <div className="bg-slate-950/80 border border-slate-800/80 rounded-xl px-3 py-2 flex items-center justify-between text-xs gap-2 flex-wrap">
           <div className="flex items-center gap-1.5 sm:gap-2.5 flex-wrap">
@@ -629,10 +1434,76 @@ ${tailoredResult.highlightedProjects
               </span>
               <span>Step 4: Twin Preview &amp; Export</span>
             </div>
+
+            <span className="text-slate-600 text-xs hidden sm:inline">&bull;</span>
+
+            {/* Optimization Log Pill */}
+            <button
+              type="button"
+              onClick={() => {
+                if (onNavigateToStage) {
+                  onNavigateToStage('log');
+                } else {
+                  setWorkspaceTab(workspaceTab === 'log' ? 'steps' : 'log');
+                }
+              }}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all cursor-pointer ${
+                workspaceTab === 'log'
+                  ? 'bg-indigo-600 text-white border border-indigo-500 shadow-sm'
+                  : approvedChangesLog.length > 0
+                  ? 'bg-slate-900 text-emerald-300 border border-emerald-500/30 hover:bg-slate-800'
+                  : 'text-slate-500 bg-slate-900/40 border border-slate-800/40 hover:text-slate-300'
+              }`}
+            >
+              <ClipboardList className="w-3.5 h-3.5 text-indigo-400" />
+              <span>Optimization Log</span>
+              {approvedChangesLog.length > 0 && (
+                <span className="px-1.5 py-0.2 rounded-full text-[9px] font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                  {approvedChangesLog.length}
+                </span>
+              )}
+            </button>
+
+            {/* Quick Export Actions */}
+            {tailoredResult && (
+              <div className="flex items-center gap-1.5 ml-auto">
+                <button
+                  type="button"
+                  onClick={handleDownloadPdf}
+                  disabled={isExportingPdf}
+                  title="Download Tailored PDF Document (Single-Page Guaranteed with Embedded Icons)"
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-slate-900 hover:bg-slate-800 text-rose-300 border border-rose-500/30 hover:text-white transition-all cursor-pointer shadow-sm"
+                >
+                  <Download className="w-3 h-3 text-rose-400" />
+                  <span>{isExportingPdf ? 'Exporting...' : 'PDF'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDownloadDocx}
+                  disabled={isExportingDocx}
+                  title="Download Tailored Word Document (.docx)"
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-slate-900 hover:bg-slate-800 text-indigo-300 border border-indigo-500/30 hover:text-white transition-all cursor-pointer shadow-sm"
+                >
+                  <Download className="w-3 h-3 text-indigo-400" />
+                  <span>{isExportingDocx ? 'Exporting...' : 'DOCX'}</span>
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* 1. Job Description Ingestion Box */}
+        {workspaceTab === 'log' ? (
+          <div className="py-1">
+            <OptimizationLogView
+              log={approvedChangesLog}
+              tailoredResult={tailoredResult}
+              onBackToControls={() => setWorkspaceTab('steps')}
+              onProceedToPreview={handleGenerateFinalTailoredResume}
+            />
+          </div>
+        ) : (
+          <>
+            {/* 1. Job Description Ingestion Box */}
         <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3 relative">
           <div className="flex items-center justify-between gap-2 mb-1.5">
             <div className="flex items-center gap-2">
@@ -647,16 +1518,102 @@ ${tailoredResult.highlightedProjects
               )}
             </div>
 
-            {gatekeeperResult?.status === 'PROCEED' && (
+            <div className="flex items-center gap-2">
               <button
-                onClick={() => setIsJdCollapsed(!isJdCollapsed)}
-                className="text-[11px] text-indigo-400 hover:text-indigo-300 flex items-center gap-1 cursor-pointer"
+                type="button"
+                onClick={() => {
+                  setShowUrlInput(!showUrlInput);
+                  setUrlExtractError(null);
+                }}
+                className={`px-2 py-0.5 rounded text-[11px] flex items-center gap-1 border transition-colors cursor-pointer ${
+                  showUrlInput
+                    ? 'bg-indigo-600/30 text-indigo-200 border-indigo-500/50'
+                    : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-700/70 hover:text-white'
+                }`}
+                title="Extract job description from a direct job link"
               >
-                <span>{isJdCollapsed ? 'Edit JD' : 'Collapse JD'}</span>
-                {isJdCollapsed ? <ChevronDown className="w-3 h-3" /> : <ChevronUp className="w-3 h-3" />}
+                <Globe className="w-3 h-3 text-indigo-400" />
+                <span>{showUrlInput ? 'Close URL Bar' : 'Extract from URL'}</span>
               </button>
-            )}
+
+              {gatekeeperResult?.status === 'PROCEED' && (
+                <button
+                  onClick={() => setIsJdCollapsed(!isJdCollapsed)}
+                  className="text-[11px] text-indigo-400 hover:text-indigo-300 flex items-center gap-1 cursor-pointer"
+                >
+                  <span>{isJdCollapsed ? 'Edit JD' : 'Collapse JD'}</span>
+                  {isJdCollapsed ? <ChevronDown className="w-3 h-3" /> : <ChevronUp className="w-3 h-3" />}
+                </button>
+              )}
+            </div>
           </div>
+
+          {/* Optional URL Scraper Input Bar */}
+          {showUrlInput && (
+            <div className="mb-2.5 p-2.5 rounded-lg bg-slate-900/90 border border-indigo-500/30 space-y-2 animate-fadeIn">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="font-medium text-slate-200 flex items-center gap-1.5">
+                  <Globe className="w-3.5 h-3.5 text-indigo-400" />
+                  Scrape &amp; Extract Job from URL
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowUrlInput(false);
+                    setUrlExtractError(null);
+                  }}
+                  className="text-slate-400 hover:text-slate-200 cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1">
+                  <Link className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="url"
+                    value={urlInputText}
+                    onChange={(e) => {
+                      setUrlInputText(e.target.value);
+                      if (urlExtractError) setUrlExtractError(null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !isExtractingUrl) {
+                        e.preventDefault();
+                        handleExtractFromUrl();
+                      }
+                    }}
+                    placeholder="Paste job link (LinkedIn, Indeed, Greenhouse, Lever, Workday, Company careers)..."
+                    className="w-full bg-slate-950 text-slate-100 text-xs rounded-lg pl-8 pr-3 py-1.5 border border-slate-800 focus:border-indigo-500 outline-none font-mono"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleExtractFromUrl()}
+                  disabled={isExtractingUrl || !urlInputText.trim()}
+                  className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-medium text-xs rounded-lg transition-all cursor-pointer flex items-center gap-1.5 shrink-0"
+                >
+                  {isExtractingUrl ? (
+                    <>
+                      <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      <span>Extracting...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-3 h-3 text-amber-300" />
+                      <span>Extract &amp; Analyze</span>
+                    </>
+                  )}
+                </button>
+              </div>
+              {urlExtractError && (
+                <div className="text-[11px] text-rose-400 flex items-start gap-1.5 bg-rose-500/10 p-2 rounded border border-rose-500/20">
+                  <ShieldAlert className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                  <span>{urlExtractError}</span>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Collapsed JD Summary Bar */}
           {gatekeeperResult?.status === 'PROCEED' && isJdCollapsed ? (
@@ -678,6 +1635,7 @@ ${tailoredResult.highlightedProjects
                 onChange={(e) => {
                   setJobDescription(e.target.value);
                   setIsJdCollapsed(false);
+                  if (urlExtractError) setUrlExtractError(null);
                   if (gatekeeperResult) setGatekeeperResult(null);
                   if (baselineScore) setBaselineScore(null);
                   if (tailoredResult) setTailoredResult(null);
@@ -686,12 +1644,72 @@ ${tailoredResult.highlightedProjects
                   if (missingTechList.length > 0) setMissingTechList([]);
                 }}
                 rows={4}
-                placeholder="Paste target job description here... (Key requirements, required tech stack, responsibilities)"
+                placeholder="Paste target job description or link here... (Key requirements, required tech stack, responsibilities)"
                 className="w-full bg-slate-900 text-slate-100 text-xs rounded-lg border border-slate-800 focus:border-indigo-500 p-2.5 outline-none font-mono resize-none leading-relaxed"
               />
+
+              {/* Detected URL Quick-Extraction Banner */}
+              {isJobUrl(jobDescription) && (
+                <div className="mt-1.5 mb-1 p-2 rounded-lg bg-indigo-500/10 border border-indigo-500/30 flex items-center justify-between text-xs text-indigo-300 animate-fadeIn">
+                  <div className="flex items-center gap-2 truncate pr-2">
+                    <Globe className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                    <span className="truncate text-[11px]">Job link detected. Extract clean JD text directly?</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleExtractFromUrl(jobDescription)}
+                    disabled={isExtractingUrl}
+                    className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-medium rounded text-[11px] shrink-0 transition-colors cursor-pointer flex items-center gap-1"
+                  >
+                    {isExtractingUrl ? (
+                      <>
+                        <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                        <span>Extracting...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-3 h-3 text-amber-300" />
+                        <span>Extract &amp; Analyze</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              )}
+
+              {/* Prominent URL Extraction Error Banner */}
+              {urlExtractError && (
+                <div className="mt-2 mb-1 p-2.5 rounded-lg bg-rose-500/15 border border-rose-500/40 text-xs text-rose-300 flex items-start gap-2 shadow-sm animate-fadeIn">
+                  <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  <div className="flex-1 font-medium">
+                    {urlExtractError}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setUrlExtractError(null)}
+                    className="text-rose-400 hover:text-rose-200 cursor-pointer text-xs ml-2"
+                    title="Dismiss alert"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
+
               <div className="flex items-center justify-between mt-1 text-[10px] text-slate-500">
                 <span>{jobDescription.length} characters</span>
                 <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowUrlInput(true);
+                      setUrlExtractError(null);
+                    }}
+                    className="hover:text-indigo-400 transition-colors cursor-pointer flex items-center gap-1"
+                    title="Extract job description from URL"
+                  >
+                    <Link className="w-2.5 h-2.5" />
+                    <span>From URL</span>
+                  </button>
+                  <span>&bull;</span>
                   <button
                     onClick={() => {
                       setJobDescription(SAMPLE_JOB_DESCRIPTIONS[0].text);
@@ -754,6 +1772,10 @@ ${tailoredResult.highlightedProjects
             <div className="text-[11px] text-slate-400">
               {gatekeeperResult?.status === 'PROCEED' ? (
                 <span className="text-emerald-400 font-mono text-[10px]">✓ Entry-Level Role Verified</span>
+              ) : gatekeeperResult?.status === 'ABORT' ? (
+                <span className="text-rose-400 font-mono text-[10px]">
+                  ✕ {gatekeeperResult.failureReason || 'Gatekeeper Blocked'}
+                </span>
               ) : (
                 <span className="text-slate-500 text-[10px]">Ready for Gatekeeper analysis</span>
               )}
@@ -762,8 +1784,8 @@ ${tailoredResult.highlightedProjects
             {gatekeeperResult?.status === 'PROCEED' ? (
               <div className="flex items-center gap-2 w-full sm:w-auto">
                 <button
-                  onClick={handleAnalyzeJd}
-                  disabled={isAnalyzing || isTailoring}
+                  onClick={() => handleAnalyzeJd()}
+                  disabled={isAnalyzing || isTailoring || isExtractingUrl}
                   className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-300 text-xs rounded-xl border border-slate-700 flex items-center justify-center gap-1.5 transition-all cursor-pointer"
                   title="Re-run Gatekeeper Analysis"
                 >
@@ -773,7 +1795,7 @@ ${tailoredResult.highlightedProjects
 
                 <button
                   onClick={tailoredResult ? handleGenerateFinalTailoredResume : () => handleExecuteTailoring({ autoTransitionToPreview: false })}
-                  disabled={isTailoring}
+                  disabled={isTailoring || isExtractingUrl}
                   className="flex-1 sm:flex-initial px-4 py-1.5 bg-gradient-to-r from-emerald-600 via-teal-500 to-indigo-600 hover:from-emerald-500 hover:to-teal-400 disabled:opacity-50 text-white font-medium text-xs rounded-xl shadow-md shadow-emerald-600/20 flex items-center justify-center gap-1.5 transition-all cursor-pointer"
                 >
                   {isTailoring ? (
@@ -791,11 +1813,16 @@ ${tailoredResult.highlightedProjects
               </div>
             ) : (
               <button
-                onClick={handleAnalyzeJd}
-                disabled={isAnalyzing || !jobDescription.trim()}
+                onClick={() => handleAnalyzeJd()}
+                disabled={isAnalyzing || isExtractingUrl || !jobDescription.trim()}
                 className="w-full sm:w-auto px-4 py-1.5 bg-gradient-to-r from-indigo-600 via-indigo-500 to-violet-600 hover:from-indigo-500 hover:to-violet-500 disabled:opacity-50 text-white font-medium text-xs rounded-xl shadow-md shadow-indigo-600/20 flex items-center justify-center gap-1.5 transition-all cursor-pointer"
               >
-                {isAnalyzing ? (
+                {isExtractingUrl ? (
+                  <>
+                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    <span>Extracting URL...</span>
+                  </>
+                ) : isAnalyzing ? (
                   <>
                     <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
                     <span>Analyzing JD...</span>
@@ -803,7 +1830,7 @@ ${tailoredResult.highlightedProjects
                 ) : (
                   <>
                     <Search className="w-3.5 h-3.5 text-indigo-200" />
-                    <span>Analyze JD</span>
+                    <span>{isJobUrl(jobDescription) ? 'Extract & Analyze' : 'Analyze JD'}</span>
                   </>
                 )}
               </button>
@@ -813,22 +1840,22 @@ ${tailoredResult.highlightedProjects
 
         {/* Gatekeeper Guardrail Block Alert (ABORT) - Clean & Compact */}
         {!isTailoring && gatekeeperResult?.status === 'ABORT' && (
-          <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-300 space-y-1.5 animate-fadeIn">
+          <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-300 space-y-2 animate-fadeIn shadow-lg">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0" />
-                <span className="font-semibold text-white">
-                  Gatekeeper Guardrail Block (ABORT)
+                <span className="font-bold text-rose-100">
+                  {gatekeeperResult.failureReason || gatekeeperResult.reasoning || gatekeeperResult.reason || 'Gatekeeper Guardrail Block (ABORT)'}
                 </span>
               </div>
-              <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-rose-500/20 text-rose-200 border border-rose-500/40 uppercase">
+              <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-rose-500/20 text-rose-200 border border-rose-500/40 uppercase font-semibold">
                 Guardrail Block
               </span>
             </div>
             <p className="text-xs text-rose-200 leading-relaxed font-medium">
-              {gatekeeperResult.reason}
+              {gatekeeperResult.reasoning || gatekeeperResult.reason || gatekeeperResult.failureReason}
             </p>
-            <div className="pt-1 border-t border-rose-500/20 text-[10px] text-slate-400 flex items-center justify-between">
+            <div className="pt-1.5 border-t border-rose-500/20 text-[10px] text-slate-400 flex items-center justify-between">
               <span>Candidate Profile: Entry-level (0-1 year)</span>
               <span className="font-mono text-slate-500">{gatekeeperResult.engine || 'Deterministic Rule Engine'}</span>
             </div>
@@ -836,7 +1863,7 @@ ${tailoredResult.highlightedProjects
         )}
 
         {/* Deterministic Baseline Score Card (Compact Collapsible Accordion) */}
-        {!isTailoring && baselineScore && (
+        {!isTailoring && gatekeeperResult?.status === 'PROCEED' && baselineScore && (
           <div className="bg-slate-950/80 border border-indigo-500/30 rounded-xl p-3 space-y-2">
             <div
               className="flex items-center justify-between cursor-pointer select-none"
@@ -960,7 +1987,8 @@ ${tailoredResult.highlightedProjects
           </div>
         )}
 
-        {/* Offline / Fallback Notice - Compact & Dismissible */}
+        {/* Offline / Fallback Notice - Hidden to preserve clean workspace UI */}
+        {/*
         {executionNotice && (
           <div className="py-1.5 px-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-xs text-amber-300 flex items-center justify-between gap-2 animate-fadeIn">
             <div className="flex items-center gap-1.5 text-[11px]">
@@ -975,6 +2003,7 @@ ${tailoredResult.highlightedProjects
             </button>
           </div>
         )}
+        */}
 
         {/* 2. Loading State Animation */}
         {isTailoring && (
@@ -1018,6 +2047,8 @@ ${tailoredResult.highlightedProjects
         {!isTailoring && optimizedSections && (
           <SectionDiffPreview
             optimizedSections={optimizedSections}
+            decisions={sectionReviewDecisions}
+            onDecisionChange={handleSectionDecisionChange}
             onApplyDecisions={handleApplyOptimizedSections}
             masterProfile={profile}
           />
@@ -1025,7 +2056,7 @@ ${tailoredResult.highlightedProjects
 
         {/* Step 2: AI Suggested Content & Active Custom Instructions */}
         {!isTailoring && tailoredResult && (
-          <div className="space-y-4">
+          <div className="space-y-4 flex flex-col justify-start">
             {/* Step 2 Banner: Guidance for Reviewing Suggestions & Custom Edits */}
             <div className="p-3 bg-gradient-to-r from-indigo-950/70 via-slate-900 to-slate-950 border border-indigo-500/30 rounded-xl flex items-center justify-between gap-3 flex-wrap">
               <div className="space-y-0.5">
@@ -1105,20 +2136,20 @@ ${tailoredResult.highlightedProjects
             </div>
 
             {/* Tailored Professional Summary */}
-            <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-4 space-y-2">
+            <div className="flex flex-col justify-start bg-slate-950/70 border border-slate-800 rounded-xl p-3.5 space-y-2">
               <div className="flex items-center justify-between">
                 <h3 className="text-xs font-semibold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
                   <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
                   Tailored Professional Summary
                 </h3>
               </div>
-              <p className="text-xs text-slate-300 leading-relaxed bg-slate-900/60 p-3 rounded-lg border border-slate-800">
+              <p className="text-xs text-slate-300 leading-[1.3] bg-slate-900/60 p-3 rounded-lg border border-slate-800">
                 {tailoredResult.tailoredSummary}
               </p>
               <SectionCustomInstruction
                 sectionKey="summary"
                 currentText={tailoredResult.tailoredSummary}
-                onApply={handleApplySectionInstruction}
+                onApply={handleApplyCustomInstruction}
                 canRevert={(sectionHistory['summary']?.length || 0) > 0}
                 onRevert={handleRevertSectionInstruction}
                 approvedMissingTech={tailoredResult.approvedMissingTech}
@@ -1130,7 +2161,7 @@ ${tailoredResult.highlightedProjects
             {/* Skills Alignment Matrix */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {/* Matched Skills */}
-              <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3.5 space-y-2">
+              <div className="flex flex-col justify-start bg-slate-950/70 border border-slate-800 rounded-xl p-3.5 space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-semibold text-slate-200 flex items-center gap-1.5">
                     <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
@@ -1150,7 +2181,7 @@ ${tailoredResult.highlightedProjects
               </div>
 
               {/* Recommended / Missing Keywords */}
-              <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3.5 space-y-2">
+              <div className="flex flex-col justify-start bg-slate-950/70 border border-slate-800 rounded-xl p-3.5 space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-semibold text-slate-200 flex items-center gap-1.5">
                     <TrendingUp className="w-3.5 h-3.5 text-amber-400" />
@@ -1210,7 +2241,7 @@ ${tailoredResult.highlightedProjects
             )}
 
             {/* Tailored Experience Bullet Points */}
-            <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-4 space-y-3">
+            <div className="flex flex-col justify-start bg-slate-950/70 border border-slate-800 rounded-xl p-3.5 space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="text-xs font-semibold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
                   <Briefcase className="w-3.5 h-3.5 text-indigo-400" />
@@ -1218,11 +2249,11 @@ ${tailoredResult.highlightedProjects
                 </h3>
               </div>
 
-              <div className="space-y-3">
+              <div className="space-y-3 flex flex-col justify-start">
                 {tailoredResult.highlightedExperiences?.map((exp, idx) => (
                   <div
                     key={idx}
-                    className="p-3 rounded-lg bg-slate-900/80 border border-slate-800 space-y-2"
+                    className="flex flex-col justify-start p-3 rounded-lg bg-slate-900/80 border border-slate-800 space-y-2"
                   >
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between text-xs gap-1">
                       <div>
@@ -1234,9 +2265,9 @@ ${tailoredResult.highlightedProjects
                       </span>
                     </div>
 
-                    <ul className="space-y-1.5 text-xs text-slate-300 list-disc list-inside">
+                    <ul className="space-y-1 text-xs text-slate-300 list-disc list-inside">
                       {exp.bulletPoints?.map((bullet, bIdx) => (
-                        <li key={bIdx} className="leading-relaxed">
+                        <li key={bIdx} className="leading-[1.3]">
                           {bullet}
                         </li>
                       ))}
@@ -1245,12 +2276,13 @@ ${tailoredResult.highlightedProjects
                     <SectionCustomInstruction
                       sectionKey={`exp-${idx}`}
                       currentText={exp.bulletPoints}
-                      onApply={handleApplySectionInstruction}
+                      onApply={handleApplyCustomInstruction}
                       canRevert={(sectionHistory[`exp-${idx}`]?.length || 0) > 0}
                       onRevert={handleRevertSectionInstruction}
                       approvedMissingTech={tailoredResult.approvedMissingTech}
                       model={selectedModel}
                       placeholder="Custom instruction for bullets (e.g., 'Make punchier', 'Quantify achievements')..."
+                      quickChips={BULLET_QUICK_CHIPS}
                     />
                   </div>
                 ))}
@@ -1258,7 +2290,7 @@ ${tailoredResult.highlightedProjects
             </div>
 
             {/* Tailored Projects */}
-            <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-4 space-y-3">
+            <div className="flex flex-col justify-start bg-slate-950/70 border border-slate-800 rounded-xl p-3.5 space-y-3">
               <h3 className="text-xs font-semibold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
                 <FileCode2 className="w-3.5 h-3.5 text-indigo-400" />
                 Tailored Projects &amp; Portfolio Highlights
@@ -1268,7 +2300,7 @@ ${tailoredResult.highlightedProjects
                 {tailoredResult.highlightedProjects?.map((proj, idx) => (
                   <div
                     key={idx}
-                    className="p-3 rounded-lg bg-slate-900/80 border border-slate-800 space-y-1.5 text-xs"
+                    className="flex flex-col justify-start p-3 rounded-lg bg-slate-900/80 border border-slate-800 space-y-1.5 text-xs"
                   >
                     <div className="font-semibold text-white">{proj.name}</div>
                     <div className="flex flex-wrap gap-1">
@@ -1281,14 +2313,14 @@ ${tailoredResult.highlightedProjects
                         </span>
                       ))}
                     </div>
-                    <p className="text-slate-300 leading-relaxed text-[11px]">
+                    <p className="text-slate-300 leading-[1.3] text-[11px]">
                       {proj.description}
                     </p>
 
                     <SectionCustomInstruction
                       sectionKey={`proj-${idx}`}
                       currentText={proj.description}
-                      onApply={handleApplySectionInstruction}
+                      onApply={handleApplyCustomInstruction}
                       canRevert={(sectionHistory[`proj-${idx}`]?.length || 0) > 0}
                       onRevert={handleRevertSectionInstruction}
                       approvedMissingTech={tailoredResult.approvedMissingTech}
@@ -1300,6 +2332,20 @@ ${tailoredResult.highlightedProjects
               </div>
             </div>
 
+            {/* Document Export Notification */}
+            {exportNotice && (
+              <div
+                className={`mb-3 p-3 rounded-xl border text-xs flex items-center gap-2 shadow-lg transition-all ${
+                  exportNotice.type === 'success'
+                    ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300'
+                    : 'bg-rose-500/15 border-rose-500/30 text-rose-300'
+                }`}
+              >
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>{exportNotice.message}</span>
+              </div>
+            )}
+
             {/* Step 3: Clear Final Action Button at Bottom of Control Flow */}
             <div className="sticky bottom-0 z-20 pt-3 pb-2 -mx-3 sm:-mx-4 px-4 bg-slate-900/95 backdrop-blur border-t border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xl rounded-b-xl">
               <div className="text-xs text-slate-300">
@@ -1308,17 +2354,43 @@ ${tailoredResult.highlightedProjects
                   Compile all approved tech, suggestions, and custom instructions into the tailored twin.
                 </span>
               </div>
-              <button
-                onClick={handleGenerateFinalTailoredResume}
-                className="px-5 py-2.5 bg-gradient-to-r from-emerald-600 via-teal-500 to-indigo-600 hover:from-emerald-500 hover:to-teal-400 text-white font-semibold text-xs rounded-xl shadow-lg shadow-emerald-600/25 flex items-center justify-center gap-2 cursor-pointer transition-all shrink-0"
-              >
-                <Sparkles className="w-4 h-4 text-amber-300" />
-                <span>Generate Final Tailored Resume</span>
-                <ArrowRight className="w-4 h-4 text-white" />
-              </button>
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  onClick={handleDownloadPdf}
+                  disabled={isExportingPdf}
+                  title="Download Tailored PDF Document (Single-Page Guaranteed with Embedded Contact Icons)"
+                  className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700 transition-colors cursor-pointer flex items-center gap-1.5 text-xs font-semibold shadow-sm"
+                >
+                  <Download className="w-3.5 h-3.5 text-rose-400" />
+                  <span>{isExportingPdf ? 'Exporting PDF...' : 'Download PDF'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleDownloadDocx}
+                  disabled={isExportingDocx}
+                  title="Download Tailored Word Document (.docx)"
+                  className="px-3.5 py-2 rounded-xl bg-indigo-950/70 hover:bg-indigo-900/80 text-indigo-200 hover:text-white border border-indigo-700/50 transition-colors cursor-pointer flex items-center gap-1.5 text-xs font-semibold shadow-sm"
+                >
+                  <Download className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>{isExportingDocx ? 'Exporting Word...' : 'Download DOCX'}</span>
+                </button>
+
+                <button
+                  onClick={handleGenerateFinalTailoredResume}
+                  className="px-5 py-2 bg-gradient-to-r from-emerald-600 via-teal-500 to-indigo-600 hover:from-emerald-500 hover:to-teal-400 text-white font-semibold text-xs rounded-xl shadow-lg shadow-emerald-600/25 flex items-center justify-center gap-2 cursor-pointer transition-all shrink-0"
+                >
+                  <Sparkles className="w-4 h-4 text-amber-300" />
+                  <span>Generate Final Tailored Resume</span>
+                  <ArrowRight className="w-4 h-4 text-white" />
+                </button>
+              </div>
             </div>
 
           </div>
+        )}
+          </>
         )}
       </div>
 

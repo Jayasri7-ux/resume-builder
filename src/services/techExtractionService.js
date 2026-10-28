@@ -12,7 +12,8 @@
  * 5. Deterministic Engine + Ollama AI Enrichment.
  */
 
-import { OLLAMA_BASE_URL, DEFAULT_MODEL, safeParseJson } from './ollamaService.js';
+import { OLLAMA_BASE_URL, DEFAULT_MODEL, safeParseJson, extractOllamaResponseText } from './ollamaService.js';
+import { stripConversationalArtifacts } from './gatekeeperService.js';
 
 // ======================================================================
 // 1. GLOBAL DICTIONARY & SYNONYM / TYPO NORMALIZATION MAP
@@ -200,7 +201,405 @@ export const GLOBAL_TECH_DICTIONARY = {
   'technical documentation': 'Technical Documentation',
   'unit testing': 'Unit Testing',
   'automated testing': 'Automated Testing',
+
+  // Non-CS/IT Domain Tool Clusters: Mechanical Engineering & CAD/CAE
+  solidworks: 'SolidWorks',
+  'solid works': 'SolidWorks',
+  creo: 'Creo',
+  'ptc creo': 'Creo',
+  'pro/engineer': 'Creo',
+  'pro engineer': 'Creo',
+  'pro-e': 'Creo',
+  autocad: 'AutoCAD',
+  'auto cad': 'AutoCAD',
+  'auto-cad': 'AutoCAD',
+  ansys: 'ANSYS',
+  'ansys workbench': 'ANSYS',
+  'ansys fluent': 'ANSYS',
+  'ansys mechanical': 'ANSYS',
+  abaqus: 'Abaqus',
+  'simulia abaqus': 'Abaqus',
+  matlab: 'MATLAB',
+  catia: 'CATIA',
+  '3dexperience catia': 'CATIA',
+  'autodesk inventor': 'Autodesk Inventor',
+  inventor: 'Autodesk Inventor',
+  'solid edge': 'Solid Edge',
+  'fusion 360': 'Fusion 360',
+  fusion360: 'Fusion 360',
+  mastercam: 'Mastercam',
+  'siemens nx': 'Siemens NX',
+  'nx cad': 'Siemens NX',
+  'nx cam': 'Siemens NX',
+  unigraphics: 'Siemens NX',
+  hypermesh: 'HyperMesh',
+  simulink: 'Simulink',
+  openfoam: 'OpenFOAM',
+  nastran: 'Nastran',
+  patran: 'Patran',
+  fea: 'FEA',
+  'finite element analysis': 'FEA',
+  cfd: 'CFD',
+  'computational fluid dynamics': 'CFD',
+  'gd&t': 'GD&T',
+  gdt: 'GD&T',
+  'geometric dimensioning and tolerancing': 'GD&T',
+
+  // Non-CS/IT Domain Tool Clusters: Civil & Structural Engineering
+  staad: 'STAAD.Pro',
+  'staad.pro': 'STAAD.Pro',
+  'staad pro': 'STAAD.Pro',
+  etabs: 'ETABS',
+  sap2000: 'SAP2000',
+  revit: 'Autodesk Revit',
+  'autodesk revit': 'Autodesk Revit',
+  'civil 3d': 'Civil 3D',
+  'autocad civil 3d': 'Civil 3D',
+  primavera: 'Primavera P6',
+  'primavera p6': 'Primavera P6',
+  tekla: 'Tekla Structures',
+  'tekla structures': 'Tekla Structures',
+  microstation: 'MicroStation',
+
+  // Non-CS/IT Domain Tool Clusters: Chemical & Process Engineering
+  'aspen plus': 'Aspen Plus',
+  'aspen hysys': 'Aspen HYSYS',
+  aspen: 'Aspen Plus',
+  chemcad: 'ChemCAD',
+  'pro/ii': 'PRO/II',
+  'pro-ii': 'PRO/II',
+  dwsim: 'DWSIM',
+  comsol: 'COMSOL Multiphysics',
+  'comsol multiphysics': 'COMSOL Multiphysics',
+
+  // Non-CS/IT Domain Tool Clusters: Hardware & Electrical Engineering
+  altium: 'Altium Designer',
+  'altium designer': 'Altium Designer',
+  kicad: 'KiCad',
+  'eagle cad': 'Eagle CAD',
+  'cadence allegro': 'Cadence Allegro',
+  allegro: 'Cadence Allegro',
+  orcad: 'OrCAD',
+  ltspice: 'LTspice',
+  pspice: 'PSpice',
+  vivado: 'Vivado',
+  quartus: 'Quartus',
+  labview: 'LabVIEW',
+  multisim: 'Multisim',
+  proteus: 'Proteus',
+
+  // Non-CS/IT Domain Tool Clusters: Medical & Clinical Healthcare
+  'patient triage': 'Patient Triage',
+  triage: 'Patient Triage',
+  'vital signs': 'Vital Signs Monitoring',
+  phlebotomy: 'Phlebotomy',
+  'epic systems': 'Epic Systems EMR',
+  'epic emr': 'Epic Systems EMR',
+  'epic ehr': 'Epic Systems EMR',
+  cerner: 'Cerner EHR',
+  'bedside care': 'Bedside Care',
+  'clinical documentation': 'Clinical Documentation',
+  'medication administration': 'Medication Administration',
+  pharmacotherapy: 'Pharmacotherapy',
+  'diagnostic radiology': 'Diagnostic Radiology',
+  stethoscope: 'Stethoscope',
+
+  // Non-CS/IT Domain Tool Clusters: Finance & Accounting
+  quickbooks: 'QuickBooks',
+  tally: 'Tally',
+  'tally prime': 'Tally Prime',
+  'tally erp': 'Tally ERP',
+  'sap fico': 'SAP FICO',
+  'general ledger': 'General Ledger',
+  'accounts payable': 'Accounts Payable',
+  'accounts receivable': 'Accounts Receivable',
+  'balance sheet': 'Balance Sheet Reconciliation',
+  'bank reconciliation': 'Bank Reconciliation',
+  'financial modeling': 'Financial Modeling',
+  'dcf valuation': 'DCF Valuation',
+  'bloomberg terminal': 'Bloomberg Terminal',
+  gaap: 'GAAP Compliance',
+  ifrs: 'IFRS Compliance',
+  'payroll accounting': 'Payroll Accounting',
+  'tax filing': 'Tax Filing',
 };
+
+// ======================================================================
+// 1B. DYNAMIC INDUSTRY DOMAIN VECTORS & SEMANTIC TAXONOMY
+// Categorizes skill and tool clusters into distinct industry vectors
+// (Software/IT/Data vs Mechanical/Hardware, Civil/Construction,
+//  Chemical/Process, Medical/Clinical, Finance/Accounting)
+// ======================================================================
+
+export const INDUSTRY_DOMAIN_VECTORS = {
+  SOFTWARE_IT_DATA: {
+    id: 'software_it_data',
+    name: 'Computer Science, IT & Data Systems',
+    isSupported: true,
+    toolSignatures: [
+      // Languages
+      'python', 'javascript', 'typescript', 'java', 'golang', 'c++', 'c#', 'rust',
+      'php', 'ruby', 'swift', 'kotlin', 'sql', 'html', 'html5', 'css', 'css3',
+      // Frameworks & Libraries
+      'react', 'reactjs', 'node', 'nodejs', 'django', 'flask', 'fastapi', 'express',
+      'angular', 'vue', 'nextjs', 'next.js', 'spring', 'spring boot', 'tailwind',
+      'bootstrap', 'pandas', 'numpy', 'scikit-learn', 'pytorch', 'tensorflow',
+      // Databases
+      'postgresql', 'postgres', 'mongodb', 'mysql', 'sqlite', 'redis', 'dynamodb',
+      'cassandra', 'oracle db', 'nosql', 'mariadb', 'elasticsearch',
+      // Cloud & DevOps
+      'docker', 'kubernetes', 'aws', 'gcp', 'azure', 'git', 'github', 'gitlab',
+      'ci/cd', 'linux', 'terraform', 'ansible', 'jenkins', 'nginx',
+      // Tools & Architecture
+      'postman', 'vscode', 'jira', 'confluence', 'rest apis', 'rest api', 'microservices',
+      'jwt', 'machine learning', 'data analytics', 'data structures', 'algorithms'
+    ],
+    roleSignatures: [
+      'software engineer', 'software developer', 'full stack developer', 'frontend developer',
+      'backend developer', 'web developer', 'python developer', 'data analyst',
+      'data engineer', 'devops engineer', 'cloud engineer', 'application developer',
+      'system software', 'ui engineer', 'ux engineer', 'qa engineer', 'ai engineer', 'nlp engineer'
+    ],
+  },
+
+  MECHANICAL_HARDWARE: {
+    id: 'mechanical_hardware',
+    name: 'Mechanical & Hardware Engineering',
+    isSupported: false,
+    toolSignatures: [
+      'solidworks', 'solid works', 'creo', 'ptc creo', 'pro/engineer', 'pro engineer', 'pro-e',
+      'autocad', 'auto cad', 'ansys', 'ansys workbench', 'ansys fluent', 'ansys mechanical',
+      'abaqus', 'simulia abaqus', 'matlab', 'catia', '3dexperience catia', 'autodesk inventor',
+      'inventor', 'solid edge', 'fusion 360', 'fusion360', 'mastercam', 'siemens nx',
+      'nx cad', 'nx cam', 'unigraphics', 'hypermesh', 'simulink', 'openfoam', 'nastran',
+      'patran', 'fea', 'finite element analysis', 'cfd', 'computational fluid dynamics',
+      'gd&t', 'gdt', 'geometric dimensioning and tolerancing', 'altium', 'altium designer',
+      'kicad', 'eagle cad', 'cadence allegro', 'allegro', 'orcad', 'ltspice', 'pspice',
+      'vivado', 'quartus', 'labview', 'multisim', 'proteus', 'oscilloscope', 'soldering',
+      'pcb layout', 'pcb design', 'plc programming', 'ladder logic', 'scada'
+    ],
+    roleSignatures: [
+      'mechanical engineer', 'mechanical design', 'cad designer', 'cae analyst',
+      'fea analyst', 'simulation engineer', 'hardware engineer', 'embedded hardware',
+      'automotive engineer', 'aerospace engineer', 'thermal engineer', 'piping engineer',
+      'mechatronics', 'manufacturing engineer', 'production engineer', 'cad drafter',
+      'simulation trainee', 'technical modeling specialist'
+    ],
+  },
+
+  CIVIL_CONSTRUCTION: {
+    id: 'civil_construction',
+    name: 'Civil & Construction Engineering',
+    isSupported: false,
+    toolSignatures: [
+      'staad', 'staad.pro', 'staad pro', 'etabs', 'sap2000', 'revit', 'autodesk revit',
+      'civil 3d', 'autocad civil 3d', 'primavera', 'primavera p6', 'tekla', 'tekla structures',
+      'microstation', 'arcgis', 'qgis', 'total station', 'concrete testing', 'concrete slump',
+      'structural drawing', 'quantity surveying', 'rebar inspection', 'geotechnical'
+    ],
+    roleSignatures: [
+      'civil engineer', 'structural engineer', 'site engineer', 'surveyor',
+      'construction manager', 'building inspector', 'quantity surveyor', 'autocad surveyor'
+    ],
+  },
+
+  CHEMICAL_PROCESS: {
+    id: 'chemical_process',
+    name: 'Chemical & Process Engineering',
+    isSupported: false,
+    toolSignatures: [
+      'aspen plus', 'aspen hysys', 'aspen', 'chemcad', 'pro/ii', 'pro-ii',
+      'dwsim', 'comsol', 'comsol multiphysics', 'p&id', 'distillation column',
+      'mass balance', 'heat exchanger', 'reaction kinetics', 'chromatography',
+      'spectrophotometer', 'titration', 'petrochemical', 'refinery operations'
+    ],
+    roleSignatures: [
+      'chemical engineer', 'process engineer', 'petroleum engineer', 'refinery engineer',
+      'plant operator', 'process simulation engineer', 'process chemist'
+    ],
+  },
+
+  MEDICAL_CLINICAL: {
+    id: 'medical_clinical',
+    name: 'Medical & Clinical Healthcare',
+    isSupported: false,
+    toolSignatures: [
+      'patient triage', 'triage', 'vital signs', 'phlebotomy', 'epic systems',
+      'epic emr', 'epic ehr', 'cerner', 'meditech', 'bedside care', 'clinical documentation',
+      'medication administration', 'pharmacotherapy', 'diagnostic radiology',
+      'stethoscope', 'iv insertion', 'icu monitoring', 'cpr', 'bls', 'acls', 'hipaa'
+    ],
+    roleSignatures: [
+      'registered nurse', 'staff nurse', 'physician', 'clinical specialist',
+      'pharmacist', 'dental assistant', 'veterinarian', 'medical assistant',
+      'clinical nurse', 'nurse practitioner'
+    ],
+  },
+
+  FINANCE_ACCOUNTING: {
+    id: 'finance_accounting',
+    name: 'Finance & Accounting',
+    isSupported: false,
+    toolSignatures: [
+      'quickbooks', 'tally', 'tally prime', 'tally erp', 'sap fico', 'sap erp',
+      'general ledger', 'accounts payable', 'accounts receivable', 'balance sheet',
+      'bank reconciliation', 'financial modeling', 'dcf valuation', 'bloomberg terminal',
+      'gaap', 'ifrs', 'payroll accounting', 'tax filing', 'audit compliance'
+    ],
+    roleSignatures: [
+      'accountant', 'financial analyst', 'bookkeeper', 'auditor', 'tax consultant',
+      'credit analyst', 'controller', 'accounts executive', 'operations analyst'
+    ],
+  },
+};
+
+export const NON_CS_IT_TOOL_CLUSTERS = INDUSTRY_DOMAIN_VECTORS;
+
+/**
+ * Dynamic Dictionary-Driven Domain Classifier
+ * Evaluates skill and tool clusters across distinct industry vectors:
+ * Software/IT/Data vs. Mechanical/Hardware, Civil/Construction,
+ * Chemical/Process, Medical/Clinical, Finance/Accounting.
+ *
+ * @param {string} text - Plain text job description
+ * @returns {{
+ *   isSupportedDomain: boolean,
+ *   dominantVector: string,
+ *   dominantVectorId: string,
+ *   score: number,
+ *   softwareScore: number,
+ *   matchedTools: string[],
+ *   vectorScores: Record<string, number>,
+ *   reason: string | null
+ * }}
+ */
+export function classifyJobDescriptionDomain(text) {
+  if (!text || typeof text !== 'string') {
+    return {
+      isSupportedDomain: true,
+      dominantVector: INDUSTRY_DOMAIN_VECTORS.SOFTWARE_IT_DATA.name,
+      dominantVectorId: 'software_it_data',
+      score: 0,
+      softwareScore: 0,
+      matchedTools: [],
+      vectorScores: {},
+      reason: null,
+    };
+  }
+
+  const cleanText = typeof stripConversationalArtifacts === 'function'
+    ? stripConversationalArtifacts(text)
+    : text;
+  const textLower = cleanText.toLowerCase();
+  const vectorScores = {};
+  const matchedToolsByVector = {};
+
+  for (const [key, vector] of Object.entries(INDUSTRY_DOMAIN_VECTORS)) {
+    let score = 0;
+    const matchedItems = new Set();
+
+    // 1. Tool & Skill Signatures matching with word boundaries
+    for (const tool of vector.toolSignatures) {
+      const escaped = tool.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const pattern = new RegExp(`(?:^|[\\s,;:.()/\\[\\]-])${escaped}(?:[\\s,;:.()/\\[\\]-]|$|s\\b)`, 'i');
+      if (pattern.test(textLower)) {
+        score += 2;
+        matchedItems.add(tool);
+      }
+    }
+
+    // 2. Role Signatures matching with word boundaries
+    for (const role of vector.roleSignatures) {
+      const escaped = role.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const pattern = new RegExp(`(?:^|[\\s,;:.()/\\[\\]-])${escaped}(?:[\\s,;:.()/\\[\\]-]|$|s\\b)`, 'i');
+      if (pattern.test(textLower)) {
+        score += 3;
+        matchedItems.add(role);
+      }
+    }
+
+    vectorScores[key] = score;
+    matchedToolsByVector[key] = Array.from(matchedItems);
+  }
+
+  const softwareScore = vectorScores.SOFTWARE_IT_DATA || 0;
+
+  // Identify highest scoring non-CS/IT vector
+  let highestNonCsVector = null;
+  let highestNonCsScore = 0;
+  let highestNonCsKey = null;
+
+  for (const [key, vector] of Object.entries(INDUSTRY_DOMAIN_VECTORS)) {
+    if (vector.isSupported) continue;
+    const score = vectorScores[key] || 0;
+    if (score > highestNonCsScore) {
+      highestNonCsScore = score;
+      highestNonCsVector = vector;
+      highestNonCsKey = key;
+    }
+  }
+
+  // Interception Decision Rules:
+  // 1. Dominant Non-CS cluster: Non-CS tool/skill score > softwareScore and Non-CS score >= 2
+  // 2. Zero software/IT requirements with any non-CS tool cluster detected (score >= 2)
+  // 3. Significant Non-CS tool clustering (>= 2 distinct tools) where non-CS score >= softwareScore
+  const isDominantNonCs =
+    highestNonCsScore >= 2 &&
+    (softwareScore === 0 || highestNonCsScore > softwareScore || (highestNonCsScore >= 4 && softwareScore <= 2));
+
+  if (isDominantNonCs && highestNonCsVector) {
+    return {
+      isSupportedDomain: false,
+      dominantVector: highestNonCsVector.name,
+      dominantVectorId: highestNonCsVector.id,
+      score: highestNonCsScore,
+      softwareScore,
+      matchedTools: matchedToolsByVector[highestNonCsKey] || [],
+      vectorScores,
+      reason: 'Domain Mismatch: The required tools and skills belong to an unsupported engineering/business domain outside Computer Science & IT.',
+    };
+  }
+
+  return {
+    isSupportedDomain: true,
+    dominantVector: INDUSTRY_DOMAIN_VECTORS.SOFTWARE_IT_DATA.name,
+    dominantVectorId: 'software_it_data',
+    score: softwareScore,
+    softwareScore,
+    matchedTools: matchedToolsByVector.SOFTWARE_IT_DATA || [],
+    vectorScores,
+    reason: null,
+  };
+}
+
+/**
+ * Strict Tool-Cluster Domain Inspector (Dynamic Classifier Bridge)
+ * Validates whether a Job Description contains tool/skill clusters mapping to an unsupported domain.
+ *
+ * @param {string} text - Job description text
+ * @returns {{
+ *   isDomainMismatch: boolean,
+ *   domain?: string,
+ *   domainKey?: string,
+ *   matchedTools?: string[],
+ *   vectorScores?: Record<string, number>,
+ *   reason?: string
+ * }}
+ */
+export function inspectDomainToolClusters(text) {
+  const classification = classifyJobDescriptionDomain(text);
+  if (!classification.isSupportedDomain) {
+    return {
+      isDomainMismatch: true,
+      domain: classification.dominantVector,
+      domainKey: classification.dominantVectorId,
+      matchedTools: classification.matchedTools,
+      vectorScores: classification.vectorScores,
+      reason: classification.reason,
+    };
+  }
+  return { isDomainMismatch: false };
+}
 
 // ======================================================================
 // 2. ANTI-FLUFF NEGATIVE CONSTRAINT FILTER
@@ -455,7 +854,12 @@ export function extractTechnicalRequirements(jdText) {
     };
   }
 
-  const textLower = jdText.toLowerCase();
+  // Pre-processing filter: Ensure extraction runs ONLY on official JD body,
+  // completely ignoring accidental text or prompt questions appended/prepended.
+  const cleanJdText = typeof stripConversationalArtifacts === 'function'
+    ? stripConversationalArtifacts(jdText)
+    : jdText;
+  const textLower = cleanJdText.toLowerCase();
   const detectedTech = new Set();
   const discardedFluff = new Set();
 
@@ -691,12 +1095,16 @@ export function analyzeMissingTech({ extractedTech, masterProfile }) {
  * @returns {string} Prompt string
  */
 export function buildTechExtractionPrompt(sanitizedJd) {
+  const cleanJd = typeof stripConversationalArtifacts === 'function'
+    ? stripConversationalArtifacts(sanitizedJd)
+    : sanitizedJd;
+
   return `You are a specialized technical taxonomy AI.
 Analyze the target job description enclosed within <user_jd> below.
 Extract and categorize all genuine technical skills, tools, frameworks, databases, and architectural concepts.
 
 <user_jd>
-${sanitizedJd}
+${cleanJd}
 </user_jd>
 
 CRITICAL FILTERING & NORMALIZATION RULES:
@@ -743,40 +1151,50 @@ export async function runTechExtractionPipeline({
   masterProfile,
   model = DEFAULT_MODEL,
   baseUrl = OLLAMA_BASE_URL,
+  timeoutMs = 15000,
 }) {
+  const cleanJd = typeof stripConversationalArtifacts === 'function'
+    ? stripConversationalArtifacts(sanitizedJd)
+    : sanitizedJd;
+
   // 1. High-accuracy deterministic extraction
-  const deterministicExtraction = extractTechnicalRequirements(sanitizedJd);
+  const deterministicExtraction = extractTechnicalRequirements(cleanJd);
 
   let finalCategorized = deterministicExtraction;
   let engine = 'Deterministic Global Dictionary';
 
+  const cleanBaseUrl = (baseUrl || OLLAMA_BASE_URL).replace(/\/+$/, '');
+
   // 2. Attempt Ollama AI extraction if reachable
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 12000); // 12s timeout
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-    const prompt = buildTechExtractionPrompt(sanitizedJd);
-    const response = await fetch(`${baseUrl}/api/generate`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-      },
-      body: JSON.stringify({
-        model,
-        prompt,
-        stream: false,
-        format: 'json',
-        options: { temperature: 0.1 },
-      }),
-      signal: controller.signal,
-    });
+    try {
+      const prompt = buildTechExtractionPrompt(cleanJd);
+      const response = await fetch(`${cleanBaseUrl}/api/generate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: JSON.stringify({
+          model,
+          prompt,
+          stream: false,
+          format: 'json',
+          options: {
+            temperature: 0.1,
+            num_predict: 1024, // Ample token budget (>= 1024) for comprehensive tech extraction
+          },
+        }),
+        signal: controller.signal,
+      });
 
-    clearTimeout(timeoutId);
-
-    if (response.ok) {
-      const data = await response.json();
-      const parsed = safeParseJson(data.response);
+      if (response.ok) {
+        const data = await response.json();
+        const rawText = extractOllamaResponseText(data);
+        const parsed = rawText ? safeParseJson(rawText) : null;
 
       if (parsed && typeof parsed === 'object') {
         // Normalize any raw LLM items through our Global Dictionary & Anti-Fluff
@@ -822,7 +1240,10 @@ export async function runTechExtractionPipeline({
         engine = `Ollama (${model}) + Global Dictionary`;
       }
     }
-  } catch {
+  } finally {
+    clearTimeout(timeoutId);
+  }
+} catch {
     // Graceful fallback to deterministic results
     engine = 'Deterministic Global Dictionary Engine';
   }
@@ -856,6 +1277,10 @@ export async function runTechExtractionPipeline({
 
 export default {
   GLOBAL_TECH_DICTIONARY,
+  INDUSTRY_DOMAIN_VECTORS,
+  NON_CS_IT_TOOL_CLUSTERS,
+  classifyJobDescriptionDomain,
+  inspectDomainToolClusters,
   ANTI_FLUFF_BLACKLIST,
   TECH_BUCKETS,
   CRISP_1LINE_DEFINITIONS,

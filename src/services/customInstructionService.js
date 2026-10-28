@@ -4,16 +4,30 @@
  * Enforces:
  * 1. Immutable Fact Firewall against blacklisted protected entities (Name, Contact, Education, Certifications, Scores, Achievements).
  * 2. Scope Guardrail blocking off-topic or conversational inputs with scope_violation flag.
- * 3. Fast processing (< 2 seconds) with a hard 5-second AbortController timeout.
+ * 3. Fast processing with a resilient 15-second AbortController timeout.
  */
 
-import { OLLAMA_BASE_URL, DEFAULT_MODEL, safeParseJson } from './ollamaService.js';
+import { OLLAMA_BASE_URL, DEFAULT_MODEL, safeParseJson, extractOllamaResponseText } from './ollamaService.js';
 
 export const FACT_FIREWALL_ERROR_MESSAGE =
   'Action Blocked: Core facts like education, certifications, and personal info are immutable sources of truth and cannot be edited via custom instructions.';
 
 export const SCOPE_VIOLATION_MESSAGE =
   'Please enter an instruction related to resume editing, wording, or formatting';
+
+/**
+ * Quick-action chips for targeted section and bullet customization.
+ */
+export const DEFAULT_QUICK_CHIPS = [
+  { label: 'Make punchier', prompt: 'Make this punchier' },
+  { label: 'Shorten', prompt: 'Shorten this' },
+  { label: 'Quantify achievements', prompt: 'Quantify achievements' },
+  { label: 'Focus on architecture & design', prompt: 'Focus on architecture & design' },
+  { label: 'Highlight leadership & collaboration', prompt: 'Highlight leadership & collaboration' },
+  { label: 'Make more technical', prompt: 'Make more technical' },
+];
+
+export const BULLET_QUICK_CHIPS = DEFAULT_QUICK_CHIPS;
 
 /**
  * Blacklist patterns for Immutable Fact Firewall.
@@ -84,7 +98,10 @@ const RESUME_EDIT_KEYWORDS = [
   'tone', 'professional', 'technical', 'clarify', 'clean up', 'active voice',
   'add', 'include', 'highlight', 'focus', 'emphasize', 'strengthen', 'improve',
   'impact', 'condense', 'trim', 'formal', 'polish', 'skills', 'tools', 'tech',
-  'faster', 'better', 'detail', 'summary', 'experience', 'project'
+  'faster', 'better', 'detail', 'summary', 'experience', 'project',
+  'achievements', 'achievement', 'architecture', 'architectural', 'design',
+  'leadership', 'collaboration', 'collaborative', 'teamwork', 'mentoring',
+  'ownership', 'algorithms', 'frameworks', 'scale', 'data'
 ];
 
 /**
@@ -141,19 +158,27 @@ export function validateScopeGuardrail(instruction) {
  * Blacklist of dangling terminal words before a period.
  * Forbids output ending abruptly with prepositions, conjunctions, or incomplete verbs.
  */
-const DANGLING_END_WORDS = new Set([
-  // Conjunctions
+export const DANGLING_END_WORDS = new Set([
+  // Conjunctions & Connectors
   'and', 'or', 'but', 'nor', 'so', 'yet', 'because', 'although', 'while', 'as', 'since', 'whereas',
+  'both', 'either', 'neither', 'whether', 'plus', 'besides',
   // Prepositions & Connectors
   'with', 'to', 'for', 'of', 'in', 'on', 'at', 'by', 'from', 'about', 'into', 'through', 'during',
-  'including', 'such', 'like', 'leveraging', 'using', 'utilizing',
+  'including', 'such', 'like', 'leveraging', 'using', 'utilizing', 'across', 'under', 'between',
+  'against', 'via', 'within', 'without', 'toward', 'towards', 'upon', 'among', 'amid', 'onto',
+  'over', 'per', 'near', 'along',
   // Incomplete Transitive Verbs & Auxiliary
   'provide', 'provides', 'providing', 'deliver', 'delivers', 'delivering',
   'support', 'supports', 'supporting', 'ensure', 'ensures', 'ensuring',
   'assist', 'assists', 'assisting', 'facilitate', 'facilitates', 'facilitating',
+  'create', 'creates', 'creating', 'build', 'builds', 'building',
+  'develop', 'develops', 'developing', 'maintain', 'maintains', 'maintaining',
+  'lead', 'leads', 'leading', 'achieve', 'achieves', 'achieving',
+  'implement', 'implements', 'implementing',
   'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had',
   // Articles & Determiners
   'a', 'an', 'the', 'their', 'our', 'its', 'this', 'that', 'these', 'those', 'some', 'any',
+  'all', 'each', 'every', 'my', 'your', 'his', 'her',
   // Relative pronouns
   'which', 'that', 'who', 'whom', 'whose', 'where', 'when',
 ]);
@@ -171,13 +196,14 @@ export function sanitizeCompletedSentence(text) {
   let cleaned = text.trim();
   if (!cleaned) return '';
 
-  // 1. Remove any unclosed quotes or brackets at the end
-  cleaned = cleaned.replace(/["'’”]+$/, '');
+  // 1. Remove any unclosed quotes or brackets at the start and end
+  cleaned = cleaned.replace(/^["'“”`]+/, '').replace(/["'’”`]+$/, '');
 
-  // 2. Strip multi-word dangling phrases (e.g. "in order to", "in order", "as well as", "along with", "such as")
-  cleaned = cleaned.replace(/\b(in\s+order\s+to|in\s+order|as\s+well\s+as|along\s+with|such\s+as|with\s+the\s+aim\s+of|so\s+as\s+to)[,\s;:–—.-]*$/gi, '').trim();
+  // 2. Strip multi-word dangling phrases (e.g. "in order to", "in order", "as well as", "along with", "such as", "with the aim of", "aimed at", "focused on")
+  const multiWordDanglingPattern = /\b(in\s+order\s+to|in\s+order|as\s+well\s+as|along\s+with|such\s+as|with\s+the\s+aim\s+of|so\s+as\s+to|as\s+a\s+result\s+of|due\s+to|prior\s+to|in\s+addition\s+to|together\s+with|aimed\s+at|focused\s+on|based\s+on)[,\s;:–—.-]*$/gi;
+  cleaned = cleaned.replace(multiWordDanglingPattern, '').trim();
 
-  // 3. Loop to strip trailing dangling words (e.g. "and.", "provide.", "with.", "to.")
+  // 3. Loop to strip trailing dangling words (e.g. "and.", "provide.", "with.", "to.", "at.", "the.")
   let changed = true;
   while (changed) {
     changed = false;
@@ -187,16 +213,16 @@ export function sanitizeCompletedSentence(text) {
       if (DANGLING_END_WORDS.has(lastWord)) {
         cleaned = cleaned.substring(0, match.index).trim();
         // Also clean any dangling phrase that might now be revealed
-        cleaned = cleaned.replace(/\b(in\s+order\s+to|in\s+order|as\s+well\s+as|along\s+with|such\s+as)[,\s;:–—.-]*$/gi, '').trim();
+        cleaned = cleaned.replace(multiWordDanglingPattern, '').trim();
         changed = true;
       }
     }
   }
 
-  // 3. Remove trailing commas, colons, semicolons, hyphens
+  // 4. Remove trailing commas, colons, semicolons, hyphens
   cleaned = cleaned.replace(/[,;:–—\s-]+$/, '').trim();
 
-  // 4. Ensure proper terminal punctuation
+  // 5. Ensure proper terminal punctuation
   if (cleaned && !/[.!?]$/.test(cleaned)) {
     cleaned += '.';
   }
@@ -326,20 +352,106 @@ export function applyDeterministicInstruction(currentText, instruction, _section
     }
   }
 
-  // 4. "Quantify" / "Add metrics" / "Highlight results"
-  if (lowerInstruction.includes('quantif') || lowerInstruction.includes('metric') || lowerInstruction.includes('number')) {
+  // 4. "Quantify achievements" / "Add metrics" / "Highlight results" / "Scale"
+  if (
+    lowerInstruction.includes('quantif') ||
+    lowerInstruction.includes('metric') ||
+    lowerInstruction.includes('number') ||
+    lowerInstruction.includes('scale') ||
+    lowerInstruction.includes('data volume')
+  ) {
     if (isArray) {
-      return currentText.map((bullet) => {
+      return currentText.map((bullet, idx) => {
         if (!/\d+%|\d+x|\d+\+/i.test(bullet)) {
-          return sanitizeCompletedSentence(`${bullet.replace(/\.$/, '')}, driving a 25% increase in operational efficiency.`);
+          const metrics = [
+            'driving a 25% increase in operational efficiency',
+            'scaling reliable API delivery across 1,000+ daily requests',
+            'reducing query latency by 35% through optimized database indexing',
+          ];
+          const metricSuffix = metrics[idx % metrics.length];
+          return sanitizeCompletedSentence(`${bullet.replace(/\.$/, '')}, ${metricSuffix}.`);
         }
         return sanitizeCompletedSentence(bullet);
       });
     }
-    return sanitizeCompletedSentence(`${textString.replace(/\.$/, '')}, improving deployment velocity by 30%.`);
+    return sanitizeCompletedSentence(`${textString.replace(/\.$/, '')}, improving deployment velocity by 30% across 1,000+ daily queries.`);
   }
 
-  // 5. Default polish
+  // 5. "Focus on architecture & design" / "system design" / "architectural choices"
+  if (
+    lowerInstruction.includes('architect') ||
+    lowerInstruction.includes('design') ||
+    lowerInstruction.includes('pattern') ||
+    lowerInstruction.includes('structural')
+  ) {
+    if (isArray) {
+      return currentText.map((bullet) => {
+        let b = bullet.trim();
+        b = b.replace(/^(?:assisted in developing|worked on|helped with|responsible for|participated in)\b/i, 'Architected and implemented');
+        if (!b.toLowerCase().includes('architect') && !b.toLowerCase().includes('design') && !b.toLowerCase().includes('pattern')) {
+          b = `${b.replace(/\.$/, '')}, adhering to scalable microservices architecture and modular design patterns.`;
+        }
+        return sanitizeCompletedSentence(b);
+      });
+    }
+    let summary = textString;
+    if (!summary.toLowerCase().includes('architect')) {
+      summary = `Architecturally focused developer specializing in robust system design and scalable patterns. ${summary}`;
+    }
+    return sanitizeCompletedSentence(summary);
+  }
+
+  // 6. "Highlight leadership & collaboration" / "teamwork" / "ownership" / "mentoring"
+  if (
+    lowerInstruction.includes('leader') ||
+    lowerInstruction.includes('collaborat') ||
+    lowerInstruction.includes('team') ||
+    lowerInstruction.includes('ownership') ||
+    lowerInstruction.includes('mentor')
+  ) {
+    if (isArray) {
+      return currentText.map((bullet) => {
+        let b = bullet.trim();
+        b = b.replace(/^(?:assisted in developing|worked on|helped with|responsible for|participated in)\b/i, 'Collaborated with cross-functional teams to engineer');
+        if (!b.toLowerCase().includes('collaborat') && !b.toLowerCase().includes('team') && !b.toLowerCase().includes('sprint') && !b.toLowerCase().includes('review')) {
+          b = `${b.replace(/\.$/, '')}, driving Agile sprint milestones and leading peer technical code reviews.`;
+        }
+        return sanitizeCompletedSentence(b);
+      });
+    }
+    let summary = textString;
+    if (!summary.toLowerCase().includes('collaborat') && !summary.toLowerCase().includes('team')) {
+      summary = `Collaborative developer experienced in cross-functional team leadership, sprint planning, and code reviews. ${summary}`;
+    }
+    return sanitizeCompletedSentence(summary);
+  }
+
+  // 7. "Make more technical" / "deep tech stack" / "algorithms" / "tools"
+  if (
+    lowerInstruction.includes('technical') ||
+    lowerInstruction.includes('tech stack') ||
+    lowerInstruction.includes('deep tech') ||
+    lowerInstruction.includes('framework') ||
+    lowerInstruction.includes('algorithm')
+  ) {
+    if (isArray) {
+      return currentText.map((bullet) => {
+        let b = bullet.trim();
+        b = b.replace(/^(?:assisted in developing|worked on|helped with)\b/i, 'Engineered and optimized');
+        if (!b.toLowerCase().includes('schema') && !b.toLowerCase().includes('rest') && !b.toLowerCase().includes('pipeline') && !b.toLowerCase().includes('sql') && !b.toLowerCase().includes('api')) {
+          b = `${b.replace(/\.$/, '')}, leveraging optimized REST APIs, structured schemas, and asynchronous execution pipelines.`;
+        }
+        return sanitizeCompletedSentence(b);
+      });
+    }
+    let summary = textString;
+    if (!summary.toLowerCase().includes('full stack') && !summary.toLowerCase().includes('algorithms')) {
+      summary = `Technical software engineer proficient in full-stack architecture, algorithms, and high-throughput backend services. ${summary}`;
+    }
+    return sanitizeCompletedSentence(summary);
+  }
+
+  // 8. Default polish
   if (isArray) {
     return currentText.map((b) => sanitizeCompletedSentence(b));
   }
@@ -348,8 +460,8 @@ export function applyDeterministicInstruction(currentText, instruction, _section
 
 /**
  * Executes a custom instruction rewrite request.
- * Wraps execution in a hard 5-second AbortController timeout.
- * Targets ONLY the scoped section text to ensure response in < 2 seconds.
+ * Wraps execution in an AbortController timeout (default: 15000ms).
+ * Targets ONLY the scoped section text to ensure fast local LLM response.
  *
  * @param {Object} params
  * @param {string} params.sectionKey - Section key (e.g., 'summary', 'internship', 'project')
@@ -357,7 +469,7 @@ export function applyDeterministicInstruction(currentText, instruction, _section
  * @param {string} params.instruction - Plain English instruction
  * @param {string[]} [params.approvedMissingTech=[]] - Approved technologies
  * @param {string} [params.model=DEFAULT_MODEL] - Ollama model name
- * @param {number} [params.timeoutMs=5000] - Hard timeout in milliseconds (default: 5000ms)
+ * @param {number} [params.timeoutMs=15000] - Hard timeout in milliseconds (default: 15000ms)
  * @returns {Promise<{success: boolean, rewrittenText?: string|string[], blocked?: boolean, scope_violation?: boolean, message?: string, durationMs: number, engine: string}>}
  */
 export async function applyCustomInstructionPipeline({
@@ -366,8 +478,10 @@ export async function applyCustomInstructionPipeline({
   instruction = '',
   approvedMissingTech = [],
   model = DEFAULT_MODEL,
-  timeoutMs = 5000,
+  baseUrl = OLLAMA_BASE_URL,
+  timeoutMs = 15000,
 } = {}) {
+  const cleanBaseUrl = (baseUrl || OLLAMA_BASE_URL).replace(/\/+$/, '');
   const startTime = Date.now();
 
   // 1. Immutable Fact Firewall Check
@@ -396,7 +510,7 @@ export async function applyCustomInstructionPipeline({
     };
   }
 
-  // 3. Lightweight API Payload execution with 5-second Abort Controller
+  // 3. Lightweight API Payload execution with 15-second Abort Controller
   const controller = new AbortController();
   const timeoutId = setTimeout(() => {
     controller.abort();
@@ -425,6 +539,10 @@ CRITICAL RULES:
    - For bullet points: maintain distinct concise bullet points.
    - For summary: maintain a cohesive professional paragraph.
    - Ground truth: do NOT invent degrees, employers, or fake certifications.
+   - If "Quantify achievements": add realistic metrics, data volumes, percentages, or scale.
+   - If "Focus on architecture & design": emphasize system design, patterns, and structural choices.
+   - If "Highlight leadership & collaboration": emphasize teamwork, cross-functional ownership, and mentoring.
+   - If "Make more technical": emphasize underlying tools, frameworks, algorithms, and deep tech stack specifics.
 3. SENTENCE COMPLETION & GRAMMAR MANDATE (ZERO CUT-OFFS):
    - You MUST ALWAYS complete every sentence fully with proper grammar and terminal punctuation (a period).
    - NEVER end abruptly with dangling conjunctions or prepositions (e.g. NEVER end with "and.", "or.", "with.", "to.", "for.", "of.", "in.", "provide.", "including.").
@@ -443,7 +561,7 @@ CRITICAL RULES:
       format: 'json',
       options: {
         temperature: 0.2,
-        num_predict: 768, // ample token capacity to guarantee zero mid-sentence cut-offs
+        num_predict: 1024, // Ample token capacity (>= 1024) to guarantee zero mid-sentence cut-offs
       },
     };
 
@@ -455,7 +573,7 @@ CRITICAL RULES:
       return sanitizeCompletedSentence(String(val || ''));
     };
 
-    const response = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
+    const response = await fetch(`${cleanBaseUrl}/api/generate`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -469,8 +587,10 @@ CRITICAL RULES:
 
     if (response.ok) {
       const result = await response.json();
-      if (result && typeof result.response === 'string') {
-        const parsed = safeParseJson(result.response);
+      const rawText = extractOllamaResponseText(result);
+
+      if (rawText) {
+        const parsed = safeParseJson(rawText);
 
         if (parsed.scope_violation === true) {
           return {
@@ -483,10 +603,17 @@ CRITICAL RULES:
           };
         }
 
-        if (parsed.rewrittenText) {
+        const candidateText =
+          parsed.rewrittenText ??
+          parsed.rewritten_text ??
+          parsed.text ??
+          parsed.result ??
+          (typeof parsed === 'string' ? parsed : null);
+
+        if (candidateText !== null && candidateText !== undefined) {
           return {
             success: true,
-            rewrittenText: sanitizeOutput(parsed.rewrittenText),
+            rewrittenText: sanitizeOutput(candidateText),
             durationMs: Date.now() - startTime,
             engine: `Ollama (${model})`,
           };
@@ -553,4 +680,124 @@ CRITICAL RULES:
       engine: 'Deterministic Section Rewrite Engine (Offline)',
     };
   }
+}
+
+/**
+ * Handler for applying custom instructions and syncing with section override state.
+ * Immediately saves generated text to customEdits and tailoredProjects.
+ *
+ * @param {Object} params
+ * @param {string} params.sectionKey - Target section identifier (e.g. 'summary', 'proj-0', 'proj_0')
+ * @param {string|string[]} params.currentText - Text to transform
+ * @param {string} params.instruction - Custom instruction string
+ * @param {Object} [params.customEdits={}] - Existing custom edits map
+ * @param {Array} [params.tailoredProjects=[]] - Existing tailored projects array
+ * @param {Object} [params.tailoredResult=null] - Existing tailored result object
+ * @param {string[]} [params.approvedMissingTech=[]] - Approved tech stack
+ * @param {string} [params.model=DEFAULT_MODEL] - Model name
+ * @param {number} [params.timeoutMs=15000] - Hard timeout in milliseconds
+ * @returns {Promise<{ success: boolean, rewrittenText?: string|string[], customEdits: Object, tailoredProjects: Array, tailoredResult?: Object, blocked?: boolean, scope_violation?: boolean, message?: string }>}
+ */
+export async function handleApplyCustomInstruction({
+  sectionKey = 'summary',
+  currentText = '',
+  instruction = '',
+  customEdits = {},
+  tailoredProjects = [],
+  tailoredResult = null,
+  approvedMissingTech = [],
+  model = DEFAULT_MODEL,
+  baseUrl = OLLAMA_BASE_URL,
+  timeoutMs = 15000,
+} = {}) {
+  const result = await applyCustomInstructionPipeline({
+    sectionKey,
+    currentText,
+    instruction,
+    approvedMissingTech,
+    model,
+    baseUrl,
+    timeoutMs,
+  });
+
+  if (!result.success || !result.rewrittenText) {
+    return {
+      ...result,
+      customEdits: { ...customEdits },
+      tailoredProjects: Array.isArray(tailoredProjects) ? [...tailoredProjects] : [],
+      tailoredResult,
+    };
+  }
+
+  const updatedEdits = {
+    ...customEdits,
+    [sectionKey]: result.rewrittenText,
+  };
+  if (sectionKey.includes('-')) {
+    updatedEdits[sectionKey.replace('-', '_')] = result.rewrittenText;
+  } else if (sectionKey.includes('_')) {
+    updatedEdits[sectionKey.replace('_', '-')] = result.rewrittenText;
+  }
+
+  let updatedProjects = Array.isArray(tailoredProjects) && tailoredProjects.length > 0
+    ? [...tailoredProjects]
+    : [...(tailoredResult?.highlightedProjects || [])];
+
+  if (sectionKey.startsWith('proj-') || sectionKey.startsWith('proj_')) {
+    const idx = parseInt(sectionKey.replace(/proj[-_]/, ''), 10);
+    if (updatedProjects[idx]) {
+      const desc = typeof result.rewrittenText === 'string' ? result.rewrittenText : String(result.rewrittenText || '');
+      updatedProjects[idx] = {
+        ...updatedProjects[idx],
+        description: desc,
+      };
+      if (updatedProjects[idx].name) {
+        updatedEdits[updatedProjects[idx].name] = desc;
+      }
+    }
+  }
+
+  let updatedTailoredResult = tailoredResult ? { ...tailoredResult } : null;
+  if (updatedTailoredResult) {
+    updatedTailoredResult.customEdits = updatedEdits;
+    if (sectionKey === 'summary' || sectionKey === 'professionalSummary') {
+      updatedTailoredResult.tailoredSummary =
+        typeof result.rewrittenText === 'string' ? result.rewrittenText : String(result.rewrittenText || '');
+    } else if (sectionKey.startsWith('proj-') || sectionKey.startsWith('proj_')) {
+      const idx = parseInt(sectionKey.replace(/proj[-_]/, ''), 10);
+      const projList = [...(updatedTailoredResult.highlightedProjects || [])];
+      if (projList[idx]) {
+        projList[idx] = {
+          ...projList[idx],
+          description: typeof result.rewrittenText === 'string' ? result.rewrittenText : String(result.rewrittenText || ''),
+        };
+        updatedTailoredResult.highlightedProjects = projList;
+        updatedTailoredResult.tailoredProjects = projList;
+      }
+    } else if (sectionKey.startsWith('exp-') || sectionKey.startsWith('exp_')) {
+      const idx = parseInt(sectionKey.replace(/exp[-_]/, ''), 10);
+      const expList = [...(updatedTailoredResult.highlightedExperiences || [])];
+      if (expList[idx]) {
+        let bullets = result.rewrittenText;
+        if (typeof bullets === 'string') {
+          bullets = bullets
+            .split('\n')
+            .map((b) => b.replace(/^[-•*]\s*/, '').trim())
+            .filter(Boolean);
+        }
+        expList[idx] = {
+          ...expList[idx],
+          bulletPoints: bullets,
+        };
+        updatedTailoredResult.highlightedExperiences = expList;
+      }
+    }
+  }
+
+  return {
+    ...result,
+    customEdits: updatedEdits,
+    tailoredProjects: updatedProjects.length > 0 ? updatedProjects : (updatedTailoredResult?.highlightedProjects || []),
+    tailoredResult: updatedTailoredResult,
+  };
 }

@@ -35,3 +35,45 @@ body {
   margin: 0 auto !important;
   box-shadow: 0 4px 16px -2px rgba(0, 0, 0, 0.5) !important;
 }
+
+/* Print Layout & Twin Template Paged Media Rules */
+@media print {
+  @page {
+    size: letter portrait;
+    margin: 0;
+  }
+
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+
+  /* Two-column print layout: Converts flex to table-cells to prevent flex-to-block pagination overflow */
+  .resume-print-container {
+    display: table !important;
+    width: 100% !important;
+    table-layout: fixed !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  .resume-print-left {
+    display: table-cell !important;
+    width: 62.5% !important;
+    vertical-align: top !important;
+    padding-right: 12px !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  .resume-print-right {
+    display: table-cell !important;
+    width: 37.5% !important;
+    vertical-align: top !important;
+    background-color: #CADEE5 !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+}

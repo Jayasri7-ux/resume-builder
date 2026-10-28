@@ -20,11 +20,16 @@ import {
  */
 export default function SectionDiffPreview({
   optimizedSections,
+  decisions: externalDecisions,
+  onDecisionChange,
   onApplyDecisions,
-  masterProfile: _masterProfile,
+  masterProfile,
 }) {
   // Track approval decisions: { [id]: 'approved' | 'rejected' }
-  const [decisions, setDecisions] = useState(() => {
+  const [internalDecisions, setInternalDecisions] = useState(() => {
+    if (externalDecisions && Object.keys(externalDecisions).length > 0) {
+      return externalDecisions;
+    }
     if (!optimizedSections || !optimizedSections.summary) return {};
     const initial = {};
     // Summary
@@ -43,6 +48,10 @@ export default function SectionDiffPreview({
     return initial;
   });
 
+  const decisions = externalDecisions && Object.keys(externalDecisions).length > 0
+    ? externalDecisions
+    : internalDecisions;
+
   const [expandedSections, setExpandedSections] = useState({
     summary: true,
     internships: true,
@@ -57,7 +66,11 @@ export default function SectionDiffPreview({
   };
 
   const setDecision = (id, status) => {
-    setDecisions((prev) => ({ ...prev, [id]: status }));
+    const updated = { ...decisions, [id]: status };
+    setInternalDecisions(updated);
+    if (onDecisionChange) {
+      onDecisionChange(id, status, updated);
+    }
   };
 
   const handleApproveAll = () => {
@@ -69,7 +82,10 @@ export default function SectionDiffPreview({
     (optimizedSections.projects || []).forEach((p) => {
       updated[p.id] = p.needs_rewrite ? 'approved' : 'bypassed';
     });
-    setDecisions(updated);
+    setInternalDecisions(updated);
+    if (onDecisionChange) {
+      onDecisionChange('all', 'approved', updated);
+    }
   };
 
   const handleRejectAll = () => {
@@ -81,7 +97,10 @@ export default function SectionDiffPreview({
     (optimizedSections.projects || []).forEach((p) => {
       updated[p.id] = 'rejected';
     });
-    setDecisions(updated);
+    setInternalDecisions(updated);
+    if (onDecisionChange) {
+      onDecisionChange('all', 'rejected', updated);
+    }
   };
 
   // Compile final accepted state for downstream document generator
@@ -90,40 +109,55 @@ export default function SectionDiffPreview({
 
     // 1. Summary
     const summaryDecision = decisions['summary'];
-    const summaryText =
-      summaryDecision === 'approved'
-        ? (optimizedSections.summary.proposedText || optimizedSections.summary.originalText)
-        : optimizedSections.summary.originalText;
+    const originalSummary =
+      masterProfile?.professionalSummary ||
+      masterProfile?.summary ||
+      masterProfile?.objective ||
+      optimizedSections.summary.originalText ||
+      '';
+
+    const isSummaryApproved = summaryDecision === 'approved' || summaryDecision === 'accept_rewrite';
+    const summaryText = isSummaryApproved
+      ? (optimizedSections.summary.proposedText || originalSummary)
+      : originalSummary;
 
     // 2. Internships
-    const finalizedInternships = (optimizedSections.internships || []).map((item) => {
+    const finalizedInternships = (optimizedSections.internships || []).map((item, idx) => {
       const decision = decisions[item.id];
-      const bullets =
-        decision === 'approved'
-          ? (item.proposedBullets && item.proposedBullets.length > 0
-              ? item.proposedBullets
-              : item.originalBullets)
-          : item.originalBullets;
+      const baseExp = (masterProfile?.workExperience || [])[idx];
+      const originalBullets = (baseExp?.bulletPoints && baseExp.bulletPoints.length > 0)
+        ? [...baseExp.bulletPoints]
+        : (item.originalBullets || []);
+
+      const isExpApproved = decision === 'approved' || decision === 'accept_rewrite';
+      const bullets = isExpApproved
+        ? (item.proposedBullets && item.proposedBullets.length > 0
+            ? item.proposedBullets
+            : originalBullets)
+        : originalBullets;
 
       return {
         ...item,
         finalBullets: bullets,
-        isApproved: decision === 'approved',
+        isApproved: isExpApproved,
       };
     });
 
     // 3. Projects
-    const finalizedProjects = (optimizedSections.projects || []).map((item) => {
+    const finalizedProjects = (optimizedSections.projects || []).map((item, idx) => {
       const decision = decisions[item.id];
-      const desc =
-        decision === 'approved'
-          ? (item.proposedDescription || item.originalDescription)
-          : item.originalDescription;
+      const baseProj = (masterProfile?.projects || [])[idx];
+      const originalDesc = baseProj?.description || item.originalDescription || '';
+
+      const isProjApproved = decision === 'approved' || decision === 'accept_rewrite';
+      const desc = isProjApproved
+        ? (item.proposedDescription || originalDesc)
+        : originalDesc;
 
       return {
         ...item,
         finalDescription: desc,
-        isApproved: decision === 'approved',
+        isApproved: isProjApproved,
       };
     });
 
@@ -132,8 +166,9 @@ export default function SectionDiffPreview({
       internships: finalizedInternships,
       projects: finalizedProjects,
       fixedSections: optimizedSections.fixedSections,
+      decisions,
     };
-  }, [decisions, optimizedSections]);
+  }, [decisions, optimizedSections, masterProfile]);
 
   if (!optimizedSections || !optimizedSections.summary) return null;
 
@@ -262,7 +297,7 @@ export default function SectionDiffPreview({
           <div className="p-4 space-y-3">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
               {/* Left: Original */}
-              <div className="p-3 rounded-lg bg-slate-950/60 border border-slate-800 space-y-1.5">
+              <div className="flex flex-col justify-start p-3 rounded-lg bg-slate-950/60 border border-slate-800 space-y-1.5">
                 <div className="flex items-center justify-between text-slate-400 text-[11px] font-semibold uppercase">
                   <span>Original Baseline</span>
                   <span className="font-mono">{optimizedSections.summary.lengthAudit?.originalWords || 0} words</span>
@@ -273,7 +308,7 @@ export default function SectionDiffPreview({
               </div>
 
               {/* Right: Proposed Rewrite */}
-              <div className="p-3 rounded-lg bg-indigo-950/20 border border-indigo-500/30 space-y-1.5">
+              <div className="flex flex-col justify-start p-3 rounded-lg bg-indigo-950/20 border border-indigo-500/30 space-y-1.5">
                 <div className="flex items-center justify-between text-indigo-300 text-[11px] font-semibold uppercase">
                   <span className="flex items-center gap-1">
                     <Sparkles className="w-3.5 h-3.5 text-amber-300" />
@@ -380,7 +415,7 @@ export default function SectionDiffPreview({
                   {/* Side by side diff */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
                     {/* Left: Original */}
-                    <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800 space-y-1">
+                    <div className="flex flex-col justify-start p-2.5 rounded-lg bg-slate-900 border border-slate-800 space-y-1">
                       <div className="flex items-center justify-between text-slate-400 text-[10px] uppercase font-semibold">
                         <span>Original Bullet</span>
                         <span className="font-mono">{audit?.originalWords || 0} words</span>
@@ -391,7 +426,7 @@ export default function SectionDiffPreview({
                     </div>
 
                     {/* Right: Proposed Rewrite */}
-                    <div className="p-2.5 rounded-lg bg-indigo-950/20 border border-indigo-500/30 space-y-1">
+                    <div className="flex flex-col justify-start p-2.5 rounded-lg bg-indigo-950/20 border border-indigo-500/30 space-y-1">
                       <div className="flex items-center justify-between text-indigo-300 text-[10px] uppercase font-semibold">
                         <span className="flex items-center gap-1">
                           <Sparkles className="w-3 h-3 text-amber-300" />
@@ -494,7 +529,7 @@ export default function SectionDiffPreview({
                   {/* Side by Side Diff */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
                     {/* Left: Original */}
-                    <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800 space-y-1">
+                    <div className="flex flex-col justify-start p-2.5 rounded-lg bg-slate-900 border border-slate-800 space-y-1">
                       <div className="flex items-center justify-between text-slate-400 text-[10px] uppercase font-semibold">
                         <span>Original Description</span>
                         <span className="font-mono">{audit?.originalWords || 0} words</span>
@@ -505,7 +540,7 @@ export default function SectionDiffPreview({
                     </div>
 
                     {/* Right: Proposed Rewrite */}
-                    <div className="p-2.5 rounded-lg bg-indigo-950/20 border border-indigo-500/30 space-y-1">
+                    <div className="flex flex-col justify-start p-2.5 rounded-lg bg-indigo-950/20 border border-indigo-500/30 space-y-1">
                       <div className="flex items-center justify-between text-indigo-300 text-[10px] uppercase font-semibold">
                         <span className="flex items-center gap-1">
                           <Sparkles className="w-3 h-3 text-amber-300" />

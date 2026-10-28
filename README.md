@@ -1,7 +1,7 @@
 # Resume Fit 🎯
 ### High-Precision, Privacy-First AI Resume Tailoring Platform & Master Profile Engine
 
-[![Tests](https://img.shields.io/badge/Tests-116%2F116%20Passing%20(100%25)-emerald?style=flat-square&logo=checkmarx)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-122%2F122%20Passing%20(100%25)-emerald?style=flat-square&logo=checkmarx)](tests/)
 [![React](https://img.shields.io/badge/React-19.2-blue?style=flat-square&logo=react)](https://react.dev/)
 [![Vite](https://img.shields.io/badge/Vite-8.3-646CFF?style=flat-square&logo=vite)](https://vitejs.dev/)
 [![TailwindCSS](https://img.shields.io/badge/Tailwind-3.4-38B2AC?style=flat-square&logo=tailwindcss)](https://tailwindcss.com/)
@@ -239,14 +239,14 @@ node tests/verifyDocxExport.js
 
 ### Verification Test Summary:
 - ✅ **Master Resume & Fact Firewall:** 10 / 10 Tests Passed (100%)
-- ✅ **Gatekeeper AI & Baseline Scoring:** 18 / 18 Tests Passed (100%)
+- ✅ **Gatekeeper AI & Baseline Scoring:** 24 / 24 Tests Passed (100%)
 - ✅ **Tech Extraction & Dictionary Normalization:** 15 / 15 Tests Passed (100%)
 - ✅ **Section Optimization & Layout Budget:** 14 / 14 Tests Passed (100%)
 - ✅ **Tailoring Pipeline & Deterministic Fallback:** 12 / 12 Tests Passed (100%)
 - ✅ **Custom Instructions, Scope Guards & Undo Stack:** 26 / 26 Tests Passed (100%)
 - ✅ **Approved Skills Integration (0 Omissions):** 11 / 11 Tests Passed (100%)
 - ✅ **DOCX / PDF Export & Twin Template Styling:** 10 / 10 Tests Passed (100%)
-- 🏆 **Total Automated Assertions: 116 / 116 Passed (100%)**
+- 🏆 **Total Automated Assertions: 122 / 122 Passed (100%)**
 
 ---
 

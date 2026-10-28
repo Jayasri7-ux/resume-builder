@@ -16,8 +16,11 @@
  * 3. Execution Guarantee: 1 single batched API call designed to complete in under 3-4 seconds.
  */
 
-import { OLLAMA_BASE_URL, DEFAULT_MODEL, safeParseJson } from './ollamaService.js';
+import { OLLAMA_BASE_URL, DEFAULT_MODEL, safeParseJson, extractOllamaResponseText } from './ollamaService.js';
 import { auditFactIntegrity } from './factFirewall.js';
+import { sanitizeCompletedSentence, DANGLING_END_WORDS } from './customInstructionService.js';
+
+export { sanitizeCompletedSentence, DANGLING_END_WORDS };
 
 /**
  * Cleanly counts words in a text block.
@@ -33,6 +36,7 @@ export function countWords(text) {
 /**
  * Enforces the layout length constraint: rewritten text must stay within
  * +/- 10 words of the original to preserve single-page layout geometry.
+ * Gracefully strips any dangling prepositions or incomplete clauses.
  *
  * @param {string} originalText - The original bullet point or summary
  * @param {string} proposedText - The proposed rewritten text
@@ -49,7 +53,8 @@ export function countWords(text) {
  */
 export function enforceLengthConstraint(originalText, proposedText, maxDelta = 10) {
   const origWords = countWords(originalText);
-  const safeProposed = (proposedText || '').trim();
+  const rawProposed = (proposedText || '').trim();
+  const safeProposed = sanitizeCompletedSentence(rawProposed);
   const propWords = countWords(safeProposed);
 
   if (!safeProposed || propWords === 0) {
@@ -72,10 +77,10 @@ export function enforceLengthConstraint(originalText, proposedText, maxDelta = 1
     return {
       text: safeProposed,
       originalWords: origWords,
-      proposedWords: propWords,
+      proposedWords: countWords(rawProposed),
       finalWords: propWords,
       delta: propWords - origWords,
-      constrained: false,
+      constrained: safeProposed !== rawProposed,
       withinBudget: true,
     };
   }
@@ -100,12 +105,14 @@ export function enforceLengthConstraint(originalText, proposedText, maxDelta = 1
       trimmedText = trimmedText.replace(/[,;:\s]+$/, '') + '.';
     }
 
+    // Post-process to ensure no dangling prepositions or incomplete clauses before terminal punctuation
+    trimmedText = sanitizeCompletedSentence(trimmedText);
     const finalWords = countWords(trimmedText);
 
     return {
       text: trimmedText,
       originalWords: origWords,
-      proposedWords: propWords,
+      proposedWords: countWords(rawProposed),
       finalWords,
       delta: finalWords - origWords,
       constrained: true,
@@ -123,7 +130,7 @@ export function enforceLengthConstraint(originalText, proposedText, maxDelta = 1
   return {
     text: finalText,
     originalWords: origWords,
-    proposedWords: propWords,
+    proposedWords: countWords(rawProposed),
     finalWords,
     delta: finalWords - origWords,
     constrained: true,
@@ -500,7 +507,7 @@ export function normalizeAndSafeguardSections(rawData, masterProfile) {
   const summary = {
     originalText: origSummary,
     // Anti-lazy / Non-empty safeguard: always fallback to origSummary if proposed is blank
-    proposedText: summaryNeedsRewrite ? (summaryAudit.text || origSummary) : origSummary,
+    proposedText: summaryNeedsRewrite ? (sanitizeCompletedSentence(summaryAudit.text) || origSummary) : origSummary,
     needs_rewrite: summaryNeedsRewrite,
     integratedKeywords: Array.isArray(rawSum?.integratedKeywords) ? rawSum.integratedKeywords : [],
     bypassReason: summaryNeedsRewrite ? null : (rawSum?.bypassReason || 'No optimization needed: already well-aligned'),
@@ -526,7 +533,7 @@ export function normalizeAndSafeguardSections(rawData, masterProfile) {
       location: exp.location,
       originalBullets: exp.bulletPoints || [],
       // Anti-lazy / Non-empty safeguard
-      proposedBullets: needsRewrite ? [lengthAudit.text || origBullet] : (exp.bulletPoints || []),
+      proposedBullets: needsRewrite ? [sanitizeCompletedSentence(lengthAudit.text) || origBullet] : (exp.bulletPoints || []),
       needs_rewrite: needsRewrite,
       integratedKeywords: Array.isArray(rawExp?.integratedKeywords) ? rawExp.integratedKeywords : [],
       bypassReason: needsRewrite ? null : (rawExp?.bypassReason || 'No optimization needed: already well-aligned'),
@@ -551,7 +558,7 @@ export function normalizeAndSafeguardSections(rawData, masterProfile) {
       techStack: proj.techStack || [],
       originalDescription: origDesc,
       // Anti-lazy / Non-empty safeguard
-      proposedDescription: needsRewrite ? (lengthAudit.text || origDesc) : origDesc,
+      proposedDescription: needsRewrite ? (sanitizeCompletedSentence(lengthAudit.text) || origDesc) : origDesc,
       needs_rewrite: needsRewrite,
       integratedKeywords: Array.isArray(rawProj?.integratedKeywords) ? rawProj.integratedKeywords : [],
       bypassReason: needsRewrite ? null : (rawProj?.bypassReason || 'No optimization needed: already well-aligned'),
@@ -587,7 +594,7 @@ export function normalizeAndSafeguardSections(rawData, masterProfile) {
  * @param {Array<string>} [params.rejectedMissingTech=[]] - Rejected tools
  * @param {string} [params.model=DEFAULT_MODEL] - Model name
  * @param {string} [params.baseUrl=OLLAMA_BASE_URL] - Ollama endpoint
- * @param {number} [params.timeoutMs=3500] - 3.5s timeout budget to guarantee < 4s execution
+ * @param {number} [params.timeoutMs=15000] - 15s timeout budget for local LLM inference
  * @returns {Promise<{
  *   success: boolean,
  *   data: Object,
@@ -605,7 +612,8 @@ export async function batchOptimizeDynamicSectionsPipeline({
   rejectedMissingTech = [],
   model = DEFAULT_MODEL,
   baseUrl = OLLAMA_BASE_URL,
-  timeoutMs = 3500,
+  options = { temperature: 0.2, num_predict: 1024 },
+  timeoutMs = 15000,
 }) {
   const startTime = Date.now();
 
@@ -625,38 +633,49 @@ export async function batchOptimizeDynamicSectionsPipeline({
   let engine = `Ollama AI (${model})`;
   let notice = null;
 
+  const cleanBaseUrl = (baseUrl || OLLAMA_BASE_URL).replace(/\/+$/, '');
+
+  const finalOptions = {
+    temperature: 0.2,
+    num_predict: 1024,
+    ...(options || {}),
+  };
+  if (!finalOptions.num_predict || finalOptions.num_predict < 512) {
+    finalOptions.num_predict = 1024;
+  }
+
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-    const response = await fetch(`${baseUrl}/api/generate`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-      },
-      body: JSON.stringify({
-        model,
-        prompt,
-        stream: false,
-        format: 'json',
-        options: {
-          temperature: 0.2, // Low temperature for high precision & speed
-          num_predict: 260, // Compact output budget for fast 2-3s generation
+    try {
+      const response = await fetch(`${cleanBaseUrl}/api/generate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
         },
-      }),
-      signal: controller.signal,
-    });
+        body: JSON.stringify({
+          model,
+          prompt,
+          stream: false,
+          format: 'json',
+          options: finalOptions,
+        }),
+        signal: controller.signal,
+      });
 
-    clearTimeout(timeoutId);
-
-    if (response.ok) {
-      const result = await response.json();
-      if (result && typeof result.response === 'string') {
-        rawJson = safeParseJson(result.response);
+      if (response.ok) {
+        const result = await response.json();
+        const rawText = extractOllamaResponseText(result);
+        if (rawText) {
+          rawJson = safeParseJson(rawText);
+        }
+      } else {
+        throw new Error(`Ollama returned status ${response.status}`);
       }
-    } else {
-      throw new Error(`Ollama returned status ${response.status}`);
+    } finally {
+      clearTimeout(timeoutId);
     }
   } catch (err) {
     notice = `Local inference standby (${err.message}). Instant fallback optimizer engaged.`;
@@ -710,6 +729,124 @@ Fake News Detection System AI Health Chatbot`,
   };
 }
 
+/**
+ * Safely extracts non-empty string content from diverse candidate representations
+ * (arrays of strings, plain strings, nested { text, rewrittenText, proposedText } objects).
+ */
+export function extractTextString(...candidates) {
+  for (const cand of candidates) {
+    if (cand === null || cand === undefined) continue;
+    if (typeof cand === 'string' && cand.trim().length > 0) {
+      return cand.trim();
+    }
+    if (Array.isArray(cand) && cand.length > 0) {
+      const items = cand
+        .map((b) => (typeof b === 'string' ? b.trim() : (b && typeof b === 'object' ? (b.text || b.bullet || b.rewrittenText || JSON.stringify(b)) : String(b || ''))))
+        .filter(Boolean);
+      if (items.length > 0) {
+        return items.join('\n');
+      }
+    }
+    if (typeof cand === 'object') {
+      const propText =
+        cand.proposedText ||
+        cand.proposedDescription ||
+        cand.description ||
+        cand.text ||
+        cand.rewrittenText ||
+        cand.rewritten_text ||
+        cand.rewrittenSummary ||
+        cand.rewritten_summary ||
+        cand.rewrittenDescription ||
+        cand.rewritten_description ||
+        cand.proposed_text ||
+        cand.proposed_description;
+      if (typeof propText === 'string' && propText.trim().length > 0) {
+        return propText.trim();
+      }
+      if (Array.isArray(cand.proposedBullets) && cand.proposedBullets.length > 0) {
+        return cand.proposedBullets.join('\n');
+      }
+      if (Array.isArray(cand.bulletPoints) && cand.bulletPoints.length > 0) {
+        return cand.bulletPoints.join('\n');
+      }
+      if (Array.isArray(cand.originalBullets) && cand.originalBullets.length > 0) {
+        return cand.originalBullets.join('\n');
+      }
+    }
+  }
+  return '';
+}
+
+/**
+ * Computes descriptive optimization rationale for audit log entries.
+ */
+export function buildOptimizationRationale({
+  type,
+  category,
+  instruction,
+  chipLabel,
+  integratedKeywords = [],
+  roleOrContext = '',
+  changesSummary = '',
+}) {
+  const promptText = (chipLabel || instruction || '').trim();
+  const lowerPrompt = promptText.toLowerCase();
+
+  // 1. Quick-Action Chips Rationale
+  if (lowerPrompt.includes('quantif')) {
+    return 'Added quantifiable metrics, percentages, and data scale to demonstrate measurable business impact';
+  }
+  if (lowerPrompt.includes('architect') || lowerPrompt.includes('design')) {
+    return 'Emphasized software system design, structural patterns, and modular architectural choices';
+  }
+  if (lowerPrompt.includes('leader') || lowerPrompt.includes('collab') || lowerPrompt.includes('team')) {
+    return 'Highlighted cross-functional collaboration, technical leadership, and collaborative code ownership';
+  }
+  if (lowerPrompt.includes('technical') || lowerPrompt.includes('stack')) {
+    return 'Deepened technical specificity by highlighting underlying tools, frameworks, and engineering protocols';
+  }
+  if (lowerPrompt.includes('punch') || lowerPrompt.includes('action verb')) {
+    return 'Applied active high-impact power verbs and concise phrasing to elevate professional impact';
+  }
+  if (lowerPrompt.includes('short') || lowerPrompt.includes('concise') || lowerPrompt.includes('trim')) {
+    return 'Streamlined word count and eliminated redundancy to optimize visual density and single-page layout balance';
+  }
+
+  // 2. Skill Additions
+  if (type === 'skill_addition' || category === 'Skills') {
+    const techName = chipLabel || instruction || roleOrContext || 'Technology';
+    return `Approved from JD Tech X-Ray to increase ATS keyword alignment for ${techName}`;
+  }
+
+  // 3. AI Section Rewrites with Integrated Keywords
+  if (integratedKeywords && integratedKeywords.length > 0) {
+    return `Tailored to match JD keyword density for ${integratedKeywords.join(', ')} with active power verbs`;
+  }
+
+  if (changesSummary && changesSummary.trim().length > 0) {
+    return changesSummary.trim();
+  }
+
+  // 4. Category-Specific Default Rationales
+  if (category === 'Summary') {
+    return 'Structured professional summary rewrite for fresher profile alignment and JD keyword match';
+  }
+  if (category === 'Experience') {
+    return 'Tailored bullet points with power action verbs and integrated JD technical competencies';
+  }
+  if (category === 'Projects') {
+    return 'Rephrased project narrative to highlight technical stack, algorithms, and engineering deliverables';
+  }
+
+  // 5. Generic Custom Instruction Prompt
+  if (promptText) {
+    return `Applied targeted user prompt "${promptText}" to enhance section impact`;
+  }
+
+  return 'Optimized content to align with target role requirements and ATS keyword criteria';
+}
+
 export default {
   countWords,
   enforceLengthConstraint,
@@ -718,4 +855,8 @@ export default {
   generateDeterministicSectionOptimization,
   normalizeAndSafeguardSections,
   batchOptimizeDynamicSectionsPipeline,
+  sanitizeCompletedSentence,
+  extractTextString,
+  buildOptimizationRationale,
+  DANGLING_END_WORDS,
 };

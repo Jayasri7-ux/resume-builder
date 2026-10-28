@@ -1,8 +1,9 @@
 import { useState, useMemo } from 'react';
-import { SlidersHorizontal, Columns2, ArrowRight, Sparkles } from 'lucide-react';
+import { SlidersHorizontal, Columns2, ArrowRight, Sparkles, ClipboardList } from 'lucide-react';
 import TailoredResumeWorkspace from './TailoredResumeWorkspace';
 import SideBySideComparisonStage from './SideBySideComparisonStage';
 import NativeResumeUploadModal from './NativeResumeUploadModal';
+import OptimizationLogView from './OptimizationLogView';
 import { loadMasterProfile, saveMasterProfile, resetMasterProfile } from '../utils/storage';
 import { auditFactIntegrity } from '../services/factFirewall';
 
@@ -52,10 +53,11 @@ export default function SideBySideWorkspace() {
 
   const [isUploadOpen, setIsUploadOpen] = useState(false);
 
-  // Workflow Stages: 'control' (Control Workspace) | 'preview' (Side-by-Side Comparison)
+  // Workflow Stages: 'control' (Control Workspace) | 'log' (Optimization Log & Approved Changes) | 'preview' (Side-by-Side Comparison)
   const [activeStage, setActiveStage] = useState('control');
   const [tailoredResult, setTailoredResult] = useState(null);
   const [baselineScore, setBaselineScore] = useState(null);
+  const [approvedChangesLog, setApprovedChangesLog] = useState([]);
 
   const handlePreviewTailoredResume = ({ tailoredResult: newTailored, baselineScore: newScore }) => {
     if (newTailored) setTailoredResult(newTailored);
@@ -90,6 +92,7 @@ export default function SideBySideWorkspace() {
       });
       setTailoredResult(null);
       setBaselineScore(null);
+      setApprovedChangesLog([]);
       setActiveStage('control');
     }
   };
@@ -110,6 +113,23 @@ export default function SideBySideWorkspace() {
             <SlidersHorizontal className="w-3.5 h-3.5" />
             <span>Control Workspace</span>
             <span className="text-[10px] font-normal opacity-80 hidden sm:inline">(Steps 1-3: JD &amp; Edits)</span>
+          </button>
+
+          <button
+            onClick={() => setActiveStage('log')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 ${
+              activeStage === 'log'
+                ? 'bg-indigo-600 text-white shadow-sm'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800'
+            }`}
+          >
+            <ClipboardList className="w-3.5 h-3.5" />
+            <span>Optimization Log &amp; Approved Changes</span>
+            {approvedChangesLog.length > 0 && (
+              <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                {approvedChangesLog.length}
+              </span>
+            )}
           </button>
 
           <button
@@ -154,11 +174,28 @@ export default function SideBySideWorkspace() {
             onPreviewTailoredResume={handlePreviewTailoredResume}
             onTailoredResultChange={setTailoredResult}
             onBaselineScoreChange={setBaselineScore}
+            approvedChangesLog={approvedChangesLog}
+            onApprovedChangesChange={setApprovedChangesLog}
+            onNavigateToStage={setActiveStage}
           />
         </div>
       </div>
 
-      {/* Stage 2: Dedicated Zero-Scroll Side-by-Side Comparison View */}
+      {/* Stage 2: Dedicated Optimization Log & Approved Changes View */}
+      <div className={activeStage === 'log' ? 'block' : 'hidden'}>
+        {activeStage === 'log' && (
+          <OptimizationLogView
+            log={approvedChangesLog}
+            tailoredResult={tailoredResult}
+            onBackToControls={handleBackToControls}
+            onProceedToPreview={() => {
+              if (tailoredResult) setActiveStage('preview');
+            }}
+          />
+        )}
+      </div>
+
+      {/* Stage 3: Dedicated Zero-Scroll Side-by-Side Comparison View */}
       <div className={activeStage === 'preview' ? 'block' : 'hidden'}>
         {activeStage === 'preview' && (
           <SideBySideComparisonStage

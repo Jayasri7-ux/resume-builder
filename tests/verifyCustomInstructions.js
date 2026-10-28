@@ -14,10 +14,22 @@ import {
   validateScopeGuardrail,
   applyDeterministicInstruction,
   applyCustomInstructionPipeline,
+  handleApplyCustomInstruction,
   sanitizeCompletedSentence,
   FACT_FIREWALL_ERROR_MESSAGE,
   SCOPE_VIOLATION_MESSAGE,
+  DEFAULT_QUICK_CHIPS,
+  BULLET_QUICK_CHIPS,
 } from '../src/services/customInstructionService.js';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+import { defaultMasterProfile } from '../src/data/defaultMasterProfile.js';
+import { generateDeterministicSectionOptimization } from '../src/services/sectionOptimizationService.js';
+import { generateDeterministicTailoring, compileFinalTailoredResume } from '../src/services/tailoringService.js';
 
 console.log('================================================================');
 console.log('  CUSTOM INSTRUCTION & TEXT-EDITING MECHANICS TEST SUITE');
@@ -397,6 +409,223 @@ async function runTests() {
     compiledDocFinal.includes(sampleSummary) && !compiledDocFinal.includes(rewriteV1),
     'Test D6: Document export is 100% synchronized with reverted baseline text',
     `Final export confirmed identical to original baseline`
+  );
+
+  // ----------------------------------------------------------------------
+  // TEST CATEGORY E: Custom Instruction and Project Edit State Synchronization
+  // ----------------------------------------------------------------------
+  console.log('\n--- TEST CATEGORY E: CUSTOM INSTRUCTION & PROJECT EDIT STATE SYNCHRONIZATION ---');
+
+  const profile = defaultMasterProfile;
+  const sampleJd = 'Looking for a Software Engineer proficient in Python, React, and Django.';
+
+  const baselineOptimization = generateDeterministicSectionOptimization({
+    masterProfile: profile,
+    jobDescription: sampleJd,
+    targetKeywords: ['Python', 'Django', 'React'],
+  });
+
+  const baselineTailored = generateDeterministicTailoring({
+    masterProfile: profile,
+    jobDescription: sampleJd,
+  });
+
+  const initialDecisions = {
+    summary: 'approved',
+    exp_0: 'approved',
+    exp_1: 'approved',
+    proj_0: 'approved',
+    proj_1: 'approved',
+  };
+
+  // Test E1: Applying quick action ("Make punchier") saves to customEdits and tailoredProjects immediately
+  const customProjectStart = profile.projects[0].description;
+  const applyProjectResult = await handleApplyCustomInstruction({
+    sectionKey: 'proj-0',
+    currentText: customProjectStart,
+    instruction: 'Make punchier',
+    customEdits: {},
+    tailoredProjects: baselineTailored.highlightedProjects,
+    tailoredResult: baselineTailored,
+  });
+
+  assert(
+    applyProjectResult.success &&
+      applyProjectResult.customEdits['proj-0'] &&
+      applyProjectResult.customEdits['proj_0'] &&
+      applyProjectResult.tailoredProjects[0].description === applyProjectResult.rewrittenText,
+    'Test E1: Applying "Make punchier" quick action immediately updates active override state (customEdits and tailoredProjects)',
+    `Updated custom description: "${applyProjectResult.rewrittenText.slice(0, 50)}..."`
+  );
+
+  // Test E2: compileFinalTailoredResume explicitly includes custom project edit in final output payload
+  const compiledWithCustomProject = compileFinalTailoredResume({
+    masterProfile: profile,
+    tailoredResult: applyProjectResult.tailoredResult,
+    optimizedSections: baselineOptimization,
+    sectionDecisions: initialDecisions,
+    customEdits: applyProjectResult.customEdits,
+    tailoredProjects: applyProjectResult.tailoredProjects,
+  });
+
+  const proposedOptProjDesc = baselineOptimization.projects[0].proposedDescription;
+  const compiledProjDesc = compiledWithCustomProject.highlightedProjects[0].description;
+
+  assert(
+    compiledProjDesc === applyProjectResult.rewrittenText &&
+      compiledProjDesc !== proposedOptProjDesc &&
+      compiledWithCustomProject.tailoredProjects[0].description === applyProjectResult.rewrittenText,
+    'Test E2: compileFinalTailoredResume binds custom project edit in final payload instead of reverting to optimization text',
+    `Compiled: "${compiledProjDesc.slice(0, 50)}..." != Opt: "${proposedOptProjDesc.slice(0, 50)}..."`
+  );
+
+  // Test E3: Custom summary edit binds to final compilation output
+  const applySummaryResult = await handleApplyCustomInstruction({
+    sectionKey: 'summary',
+    currentText: profile.professionalSummary,
+    instruction: 'Shorten this',
+    customEdits: applyProjectResult.customEdits,
+    tailoredProjects: applyProjectResult.tailoredProjects,
+    tailoredResult: compiledWithCustomProject,
+  });
+
+  const compiledWithBothCustomEdits = compileFinalTailoredResume({
+    masterProfile: profile,
+    tailoredResult: applySummaryResult.tailoredResult,
+    optimizedSections: baselineOptimization,
+    sectionDecisions: initialDecisions,
+    customEdits: applySummaryResult.customEdits,
+    tailoredProjects: applySummaryResult.tailoredProjects,
+  });
+
+  assert(
+    compiledWithBothCustomEdits.tailoredSummary === applySummaryResult.rewrittenText &&
+      compiledWithBothCustomEdits.highlightedProjects[0].description === applyProjectResult.rewrittenText,
+    'Test E3: Multiple section custom edits (Summary + Projects) persist simultaneously in final compiled payload',
+    `Summary: "${compiledWithBothCustomEdits.tailoredSummary.slice(0, 40)}..."`
+  );
+
+  // Test E4: Rejection preservation (Keep Original strictly respected even when custom edit exists)
+  const decisionsWithProjRejected = {
+    ...initialDecisions,
+    proj_0: 'rejected',
+  };
+
+  const compiledWithRejection = compileFinalTailoredResume({
+    masterProfile: profile,
+    tailoredResult: applySummaryResult.tailoredResult,
+    optimizedSections: baselineOptimization,
+    sectionDecisions: decisionsWithProjRejected,
+    customEdits: applySummaryResult.customEdits,
+    tailoredProjects: applySummaryResult.tailoredProjects,
+  });
+
+  assert(
+    compiledWithRejection.highlightedProjects[0].description === profile.projects[0].description &&
+      compiledWithRejection.highlightedProjects[0].isRejected === true &&
+      compiledWithRejection.tailoredSummary === applySummaryResult.rewrittenText,
+    'Test E4: Choosing "Keep Original" strictly restores original baseline project while preserving summary custom edit',
+    `Retained baseline project: "${compiledWithRejection.highlightedProjects[0].description.slice(0, 50)}..."`
+  );
+
+  // ----------------------------------------------------------------------
+  // TEST CATEGORY F: Expanded Quick-Action Chips & Bullet Customization
+  // ----------------------------------------------------------------------
+  console.log('\n--- TEST CATEGORY F: EXPANDED QUICK-ACTION CHIPS & BULLET CUSTOMIZATION ---');
+
+  // Test F1: "Quantify achievements" adds metrics/percentages/scale to bullet points
+  const quantifiedBullets = applyDeterministicInstruction(sampleBullets, 'Quantify achievements', 'internship');
+  const hasMetrics = Array.isArray(quantifiedBullets) && quantifiedBullets.every((b) => /\d+%|\d+x|\d+\+/i.test(b));
+  assert(
+    hasMetrics,
+    'Test F1: "Quantify achievements" focuses on adding metrics, data volumes, percentages, or scale',
+    `Bullet 1: "${quantifiedBullets[0]}" | Bullet 2: "${quantifiedBullets[1]}"`
+  );
+
+  // Test F2: "Focus on architecture & design" emphasizes system design, patterns, and structural choices
+  const architectureBullets = applyDeterministicInstruction(sampleBullets, 'Focus on architecture & design', 'internship');
+  const hasArchitecture =
+    Array.isArray(architectureBullets) &&
+    architectureBullets.some((b) => /architect|design|pattern|microservices/i.test(b));
+  assert(
+    hasArchitecture,
+    'Test F2: "Focus on architecture & design" emphasizes system design, patterns, and structural choices',
+    `Bullet 1: "${architectureBullets[0]}"`
+  );
+
+  // Test F3: "Highlight leadership & collaboration" emphasizes teamwork, cross-functional ownership, and mentoring
+  const leadershipBullets = applyDeterministicInstruction(sampleBullets, 'Highlight leadership & collaboration', 'internship');
+  const hasLeadership =
+    Array.isArray(leadershipBullets) &&
+    leadershipBullets.some((b) => /collaborat|cross-functional|team|sprint|peer review/i.test(b));
+  assert(
+    hasLeadership,
+    'Test F3: "Highlight leadership & collaboration" emphasizes teamwork, cross-functional ownership, and peer reviews',
+    `Bullet 1: "${leadershipBullets[0]}"`
+  );
+
+  // Test F4: "Make more technical" emphasizes underlying tools, frameworks, algorithms, and deep tech stack specifics
+  const technicalBullets = applyDeterministicInstruction(sampleBullets, 'Make more technical', 'internship');
+  const hasTechnical =
+    Array.isArray(technicalBullets) &&
+    technicalBullets.some((b) => /REST API|schema|pipeline|optimized/i.test(b));
+  assert(
+    hasTechnical,
+    'Test F4: "Make more technical" emphasizes underlying tools, frameworks, algorithms, and deep tech stack specifics',
+    `Bullet 1: "${technicalBullets[0]}"`
+  );
+
+  // Test F5: All 6 quick chips are exported, defined, rendered in SectionCustomInstruction.jsx, and pass Scope Guardrail & Fact Firewall
+  const expectedChipLabels = [
+    'Make punchier',
+    'Shorten',
+    'Quantify achievements',
+    'Focus on architecture & design',
+    'Highlight leadership & collaboration',
+    'Make more technical',
+  ];
+
+  const chipsPresent = expectedChipLabels.every((label) =>
+    DEFAULT_QUICK_CHIPS.some((chip) => chip.label === label)
+  );
+
+  const sectionComponentPath = path.resolve(__dirname, '../src/components/SectionCustomInstruction.jsx');
+  const sectionComponentSource = fs.readFileSync(sectionComponentPath, 'utf8');
+  const renderedInComponent = expectedChipLabels.every((label) =>
+    sectionComponentSource.includes(label)
+  );
+
+  const allChipsSafe = DEFAULT_QUICK_CHIPS.every((chip) => {
+    const fact = validateFactFirewall(chip.prompt);
+    const scope = validateScopeGuardrail(chip.prompt);
+    return !fact.blocked && !scope.scope_violation;
+  });
+
+  assert(
+    chipsPresent && renderedInComponent && allChipsSafe && Array.isArray(BULLET_QUICK_CHIPS),
+    'Test F5: All 6 quick-action chips are defined, exported, rendered in UI component, and cleanly pass Scope Guardrail & Fact Firewall',
+    `Configured Chips: [${DEFAULT_QUICK_CHIPS.map((c) => c.label).join(', ')}]`
+  );
+
+  // Test F6: handleApplyCustomInstruction seamlessly updates experience bullet points in active tailoredResult state
+  const bulletInstructionResult = await handleApplyCustomInstruction({
+    sectionKey: 'exp-0',
+    currentText: sampleBullets,
+    instruction: 'Quantify achievements',
+    customEdits: {},
+    tailoredProjects: [],
+    tailoredResult: compiledWithBothCustomEdits,
+  });
+
+  const updatedExpBullets = bulletInstructionResult.tailoredResult?.highlightedExperiences?.[0]?.bulletPoints;
+  assert(
+    bulletInstructionResult.success &&
+      Array.isArray(updatedExpBullets) &&
+      updatedExpBullets.length === sampleBullets.length &&
+      updatedExpBullets.every((b) => /\d+%|\d+x|\d+\+/i.test(b)) &&
+      bulletInstructionResult.customEdits['exp-0'] !== undefined,
+    'Test F6: handleApplyCustomInstruction seamlessly replaces current bullet points while updating customEdits state',
+    `Updated Bullets: ${updatedExpBullets?.length} bullets updated with metrics`
   );
 
   // ----------------------------------------------------------------------

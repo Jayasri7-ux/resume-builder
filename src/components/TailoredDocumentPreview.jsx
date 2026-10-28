@@ -22,6 +22,7 @@ import {
   exportTailoredPdf,
   generateTailoredDocxBuffer,
   categorizeApprovedSkills,
+  computeDynamicContentSpacing,
 } from '../services/docxExportService';
 
 export default function TailoredDocumentPreview({
@@ -323,6 +324,15 @@ ${(profile?.certifications || []).map((c) => `• ${c.name} – ${c.issuer}`).jo
   const projects = tailoredResult?.highlightedProjects || profile?.projects || [];
   const hasDocxBuffer = Boolean(tailoredDocxBuffer);
 
+  // Dynamic Content Spacing & Overflow Control
+  const { previewSpacing } = computeDynamicContentSpacing({
+    summary: tailoredResult?.tailoredSummary || profile?.professionalSummary || '',
+    experiences,
+    projects,
+    approvedTech,
+    profile,
+  });
+
   return (
     <div className="flex flex-col h-full bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
       {/* Top Bar with Scale & Action Controls */}
@@ -526,7 +536,7 @@ ${(profile?.certifications || []).map((c) => `• ${c.name} – ${c.issuer}`).jo
                 minHeight: '1056px',
                 fontFamily: "'Franklin Gothic Medium', Arial, 'Helvetica Neue', sans-serif",
               }}
-              className="bg-white text-slate-900 px-8 py-7 shadow-2xl box-border border border-slate-300"
+              className="bg-white text-slate-900 px-8 py-7 shadow-2xl box-border border border-slate-300 flex flex-col justify-start"
             >
               {/* Header: Candidate Full Name in Native #2C3B57 Navy (Centered & Uppercase) */}
               <div className="mb-2 text-center">
@@ -556,34 +566,34 @@ ${(profile?.certifications || []).map((c) => `• ${c.name} – ${c.issuer}`).jo
               </div>
 
               {/* Two-Column Grid: Exact Twin of Master_Resume.docx (63% Left, 37% Right #CADEE5) */}
-              <div className="flex gap-4 items-stretch">
+              <div className="flex gap-4 items-start resume-print-container">
                 {/* Left Column (~63%): Objective, Internships, Projects */}
-                <div className="w-[62.5%] flex-shrink-0 pr-1 space-y-3">
+                <div className={`w-[62.5%] flex-shrink-0 pr-1 flex flex-col justify-start resume-print-left ${previewSpacing.leftSpaceY}`}>
                   {/* 1. OBJECTIVE */}
-                  <div>
+                  <div className="flex flex-col justify-start">
                     <h2 className="text-[12.5px] font-bold uppercase tracking-wider text-[#2C3B57] border-b-[1.5px] border-[#2C3B57] pb-0.5 mb-1.5">
                       OBJECTIVE
                     </h2>
-                    <p className="text-[10px] text-[#222222] leading-relaxed text-justify">
+                    <p className={`text-[10px] text-[#222222] ${previewSpacing.lineHeightClass} text-justify`}>
                       {tailoredResult?.tailoredSummary || profile?.professionalSummary}
                     </p>
                   </div>
 
                   {/* 2. INTERNSHIPS */}
-                  <div>
+                  <div className="flex flex-col justify-start">
                     <h2 className="text-[12.5px] font-bold uppercase tracking-wider text-[#2C3B57] border-b-[1.5px] border-[#2C3B57] pb-0.5 mb-1.5">
                       INTERNSHIPS
                     </h2>
-                    <div className="space-y-2">
+                    <div className="flex flex-col justify-start space-y-1.5">
                       {experiences.map((exp, idx) => (
-                        <div key={idx} className="text-[10px]">
+                        <div key={idx} className="flex flex-col justify-start text-[10px]">
                           <div className="font-bold text-[#2C3B57] text-[10.5px]">
                             {exp.company}
                           </div>
                           <div className="font-semibold text-[#111111] text-[9.5px]">
                             {exp.title} | {exp.period || `${exp.startDate} – ${exp.endDate}`}
                           </div>
-                          <ul className="list-disc list-outside ml-3.5 text-[#222222] space-y-0.5 leading-snug mt-0.5">
+                          <ul className={`list-disc list-outside ml-3.5 text-[#222222] ${previewSpacing.bulletSpaceY} ${previewSpacing.lineHeightClass} mt-0.5`}>
                             {exp.bulletPoints?.map((bp, bIdx) => (
                               <li key={bIdx}>{bp}</li>
                             ))}
@@ -594,20 +604,20 @@ ${(profile?.certifications || []).map((c) => `• ${c.name} – ${c.issuer}`).jo
                   </div>
 
                   {/* 3. PROJECTS */}
-                  <div>
+                  <div className="flex flex-col justify-start">
                     <h2 className="text-[12.5px] font-bold uppercase tracking-wider text-[#2C3B57] border-b-[1.5px] border-[#2C3B57] pb-0.5 mb-1.5">
                       PROJECTS
                     </h2>
-                    <div className="space-y-2">
+                    <div className="flex flex-col justify-start space-y-1.5">
                       {projects.map((proj, idx) => (
-                        <div key={idx} className="text-[10px]">
+                        <div key={idx} className="flex flex-col justify-start text-[10px]">
                           <div className="font-bold text-[#2C3B57] text-[10.5px]">
                             {proj.name}
                           </div>
                           <div className="font-semibold text-[#111111] text-[9.5px]">
                             Tech: {Array.isArray(proj.techStack) ? proj.techStack.join(' | ') : proj.techStack}
                           </div>
-                          <p className="text-[#222222] leading-snug mt-0.5">
+                          <p className={`text-[#222222] ${previewSpacing.lineHeightClass} mt-0.5`}>
                             {proj.description}
                           </p>
                         </div>
@@ -617,15 +627,15 @@ ${(profile?.certifications || []).map((c) => `• ${c.name} – ${c.issuer}`).jo
                 </div>
 
                 {/* Right Column (~37%): Shaded #CADEE5 Background - Education, Skills, Awards, Certifications */}
-                <div className="w-[37.5%] flex-shrink-0 bg-[#CADEE5] p-3 text-slate-900 space-y-3">
+                <div className={`w-[37.5%] flex-shrink-0 bg-[#CADEE5] p-3 text-slate-900 flex flex-col justify-start resume-print-right ${previewSpacing.sidebarSpaceY}`}>
                   {/* 1. Education */}
-                  <div>
+                  <div className="flex flex-col justify-start">
                     <h2 className="text-[12.5px] font-bold uppercase tracking-wider text-[#2C3B57] border-b-[1.5px] border-[#2C3B57] pb-0.5 mb-1.5">
                       Education
                     </h2>
-                    <div className="space-y-1.5 text-[9.5px]">
+                    <div className="flex flex-col justify-start space-y-1 text-[9.5px]">
                       {(profile?.education || []).map((edu, idx) => (
-                        <div key={idx}>
+                        <div key={idx} className="flex flex-col justify-start">
                           <div className="font-bold text-[#111111]">
                             {edu.degree}{edu.fieldOfStudy ? ` (${edu.fieldOfStudy})` : ''} | {edu.graduationYear}
                           </div>
@@ -638,11 +648,11 @@ ${(profile?.certifications || []).map((c) => `• ${c.name} – ${c.issuer}`).jo
                   </div>
 
                   {/* 2. TECHNICAL SKILLS */}
-                  <div>
+                  <div className="flex flex-col justify-start">
                     <h2 className="text-[12.5px] font-bold uppercase tracking-wider text-[#2C3B57] border-b-[1.5px] border-[#2C3B57] pb-0.5 mb-1.5">
                       TECHNICAL SKILLS
                     </h2>
-                    <div className="text-[9.5px] text-[#222222] space-y-1 leading-snug">
+                    <div className={`flex flex-col justify-start text-[9.5px] text-[#222222] space-y-1 ${previewSpacing.sidebarTextLeading}`}>
                       <div>
                         <strong>Languages:</strong> {profile?.coreTechnicalSkills?.languages?.join(', ') || 'Python, Java, JavaScript, C'}
                         {categorizedSkills.languages.length > 0 && (
@@ -687,7 +697,7 @@ ${(profile?.certifications || []).map((c) => `• ${c.name} – ${c.issuer}`).jo
                   </div>
 
                   {/* 3. AWARDS */}
-                  <div>
+                  <div className="flex flex-col justify-start">
                     <h2 className="text-[12.5px] font-bold uppercase tracking-wider text-[#2C3B57] border-b-[1.5px] border-[#2C3B57] pb-0.5 mb-1.5">
                       AWARDS
                     </h2>
@@ -699,7 +709,7 @@ ${(profile?.certifications || []).map((c) => `• ${c.name} – ${c.issuer}`).jo
                   </div>
 
                   {/* 4. CERTIFICATIONS */}
-                  <div>
+                  <div className="flex flex-col justify-start">
                     <h2 className="text-[12.5px] font-bold uppercase tracking-wider text-[#2C3B57] border-b-[1.5px] border-[#2C3B57] pb-0.5 mb-1.5">
                       CERTIFICATIONS
                     </h2>

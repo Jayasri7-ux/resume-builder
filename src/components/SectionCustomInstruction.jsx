@@ -2,6 +2,17 @@ import { useState } from 'react';
 import { Sparkles, RotateCcw, AlertCircle, ShieldAlert } from 'lucide-react';
 import { applyCustomInstructionPipeline } from '../services/customInstructionService';
 
+export const DEFAULT_QUICK_CHIPS = [
+  { label: 'Make punchier', prompt: 'Make this punchier' },
+  { label: 'Shorten', prompt: 'Shorten this' },
+  { label: 'Quantify achievements', prompt: 'Quantify achievements' },
+  { label: 'Focus on architecture & design', prompt: 'Focus on architecture & design' },
+  { label: 'Highlight leadership & collaboration', prompt: 'Highlight leadership & collaboration' },
+  { label: 'Make more technical', prompt: 'Make more technical' },
+];
+
+export const BULLET_QUICK_CHIPS = DEFAULT_QUICK_CHIPS;
+
 /**
  * Targeted Card-Level Custom Instruction Component
  * Scoped locally to individual resume section cards.
@@ -9,7 +20,7 @@ import { applyCustomInstructionPipeline } from '../services/customInstructionSer
  * - Immutable Fact Firewall blocking alterations to core facts
  * - Scope Guardrail flagging off-topic or conversational inputs
  * - Undo History Revert button
- * - Fast API processing with hard 5s AbortController timeout
+ * - Fast API processing with resilient 15s AbortController timeout
  */
 export default function SectionCustomInstruction({
   sectionKey,
@@ -20,19 +31,21 @@ export default function SectionCustomInstruction({
   approvedMissingTech = [],
   model,
   placeholder = "Custom instruction (e.g., 'Make this punchier', 'Shorten this')...",
+  quickChips = DEFAULT_QUICK_CHIPS,
 }) {
   const [instruction, setInstruction] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState(null);
   const [isBlocked, setIsBlocked] = useState(false);
 
-  const handleApply = async () => {
-    const trimmed = instruction.trim();
+  const handleApply = async (customPrompt) => {
+    const trimmed = (typeof customPrompt === 'string' ? customPrompt : instruction).trim();
     if (!trimmed || isLoading) return;
 
     setIsLoading(true);
     setErrorMessage(null);
     setIsBlocked(false);
+    setInstruction(trimmed);
 
     try {
       const response = await applyCustomInstructionPipeline({
@@ -41,7 +54,7 @@ export default function SectionCustomInstruction({
         instruction: trimmed,
         approvedMissingTech,
         model,
-        timeoutMs: 5000,
+        timeoutMs: 15000,
       });
 
       if (response.blocked) {
@@ -57,7 +70,10 @@ export default function SectionCustomInstruction({
       }
 
       if (response.success && response.rewrittenText) {
-        onApply(sectionKey, response.rewrittenText);
+        onApply(sectionKey, response.rewrittenText, {
+          instruction: trimmed,
+          previousText: currentText,
+        });
         setInstruction('');
         setErrorMessage(null);
       }
@@ -76,8 +92,7 @@ export default function SectionCustomInstruction({
   };
 
   const handleQuickPrompt = (promptText) => {
-    setInstruction(promptText);
-    setErrorMessage(null);
+    handleApply(promptText);
   };
 
   return (
@@ -141,20 +156,17 @@ export default function SectionCustomInstruction({
       {/* Quick Prompt Chips */}
       <div className="flex items-center gap-1.5 flex-wrap text-[10px]">
         <span className="text-slate-500 font-medium">Quick:</span>
-        <button
-          type="button"
-          onClick={() => handleQuickPrompt('Make this punchier')}
-          className="px-2 py-0.5 rounded-md bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-slate-200 border border-slate-700/50 transition-colors cursor-pointer"
-        >
-          Make punchier
-        </button>
-        <button
-          type="button"
-          onClick={() => handleQuickPrompt('Shorten this')}
-          className="px-2 py-0.5 rounded-md bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-slate-200 border border-slate-700/50 transition-colors cursor-pointer"
-        >
-          Shorten
-        </button>
+        {quickChips.map((chip) => (
+          <button
+            key={chip.label}
+            type="button"
+            onClick={() => handleQuickPrompt(chip.prompt)}
+            disabled={isLoading}
+            className="px-2 py-0.5 rounded-md bg-slate-800/80 hover:bg-slate-700 disabled:opacity-50 text-slate-400 hover:text-slate-200 border border-slate-700/50 transition-colors cursor-pointer"
+          >
+            {chip.label}
+          </button>
+        ))}
       </div>
 
       {/* Security & Scope Firewall Alert Message */}
