@@ -357,7 +357,7 @@ export default function DocumentPreview({ document, defaultProfile, onOpenUpload
                 minHeight: '1056px',
                 fontFamily: "'Franklin Gothic Medium', Arial, 'Helvetica Neue', sans-serif",
               }}
-              className="bg-white text-slate-900 px-8 py-7 shadow-2xl box-border border border-slate-300 flex flex-col justify-start"
+              className="bg-white text-slate-900 px-8 py-7 shadow-2xl box-border border border-slate-300"
             >
               {/* Header: Candidate Full Name in Native #2C3B57 Navy (Centered & Uppercase) */}
               <div className="mb-2 text-center">
@@ -387,34 +387,34 @@ export default function DocumentPreview({ document, defaultProfile, onOpenUpload
               </div>
 
               {/* Two-Column Grid: Exact Twin of Master_Resume.docx (63% Left, 37% Right #CADEE5) */}
-              <div className="flex gap-4 items-start">
+              <div className="flex gap-4 items-stretch">
                 {/* Left Column (~63%): Objective, Internships, Projects */}
-                <div className="w-[62.5%] flex-shrink-0 pr-1 space-y-2.5 flex flex-col justify-start">
+                <div className="w-[62.5%] flex-shrink-0 pr-1 space-y-3">
                   {/* 1. OBJECTIVE */}
-                  <div className="flex flex-col justify-start">
+                  <div>
                     <h2 className="text-[12.5px] font-bold uppercase tracking-wider text-[#2C3B57] border-b-[1.5px] border-[#2C3B57] pb-0.5 mb-1.5">
                       OBJECTIVE
                     </h2>
-                    <p className="text-[10px] text-[#222222] leading-[1.3] text-justify">
+                    <p className="text-[10px] text-[#222222] leading-relaxed text-justify">
                       {defaultProfile.professionalSummary}
                     </p>
                   </div>
 
                   {/* 2. INTERNSHIPS */}
-                  <div className="flex flex-col justify-start">
+                  <div>
                     <h2 className="text-[12.5px] font-bold uppercase tracking-wider text-[#2C3B57] border-b-[1.5px] border-[#2C3B57] pb-0.5 mb-1.5">
                       INTERNSHIPS
                     </h2>
-                    <div className="space-y-1.5 flex flex-col justify-start">
+                    <div className="space-y-2">
                       {defaultProfile.workExperience?.map((exp, idx) => (
-                        <div key={idx} className="flex flex-col justify-start text-[10px]">
+                        <div key={idx} className="text-[10px]">
                           <div className="font-bold text-[#2C3B57] text-[10.5px]">
                             {exp.company}
                           </div>
                           <div className="font-semibold text-[#111111] text-[9.5px]">
                             {exp.title} | {exp.startDate} – {exp.endDate}
                           </div>
-                          <ul className="list-disc list-outside ml-3.5 text-[#222222] space-y-1 leading-[1.3] mt-0.5">
+                          <ul className="list-disc list-outside ml-3.5 text-[#222222] space-y-0.5 leading-snug mt-0.5">
                             {exp.bulletPoints?.map((bp, bIdx) => (
                               <li key={bIdx}>{bp}</li>
                             ))}
@@ -425,20 +425,20 @@ export default function DocumentPreview({ document, defaultProfile, onOpenUpload
                   </div>
 
                   {/* 3. PROJECTS */}
-                  <div className="flex flex-col justify-start">
+                  <div>
                     <h2 className="text-[12.5px] font-bold uppercase tracking-wider text-[#2C3B57] border-b-[1.5px] border-[#2C3B57] pb-0.5 mb-1.5">
                       PROJECTS
                     </h2>
-                    <div className="space-y-1.5 flex flex-col justify-start">
+                    <div className="space-y-2">
                       {defaultProfile.projects?.map((proj, idx) => (
-                        <div key={idx} className="flex flex-col justify-start text-[10px]">
+                        <div key={idx} className="text-[10px]">
                           <div className="font-bold text-[#2C3B57] text-[10.5px]">
                             {proj.name}
                           </div>
                           <div className="font-semibold text-[#111111] text-[9.5px]">
                             Tech: {Array.isArray(proj.techStack) ? proj.techStack.join(' | ') : proj.techStack}
                           </div>
-                          <p className="text-[#222222] leading-[1.3] mt-0.5">
+                          <p className="text-[#222222] leading-snug mt-0.5">
                             {proj.description}
                           </p>
                         </div>
@@ -448,15 +448,15 @@ export default function DocumentPreview({ document, defaultProfile, onOpenUpload
                 </div>
 
                 {/* Right Column (~37%): Shaded #CADEE5 Background - Education, Skills, Awards, Certifications */}
-                <div className="w-[37.5%] flex-shrink-0 bg-[#CADEE5] p-3 text-slate-900 space-y-2.5 flex flex-col justify-start">
+                <div className="w-[37.5%] flex-shrink-0 bg-[#CADEE5] p-3 text-slate-900 space-y-3">
                   {/* 1. Education */}
-                  <div className="flex flex-col justify-start">
+                  <div>
                     <h2 className="text-[12.5px] font-bold uppercase tracking-wider text-[#2C3B57] border-b-[1.5px] border-[#2C3B57] pb-0.5 mb-1.5">
                       Education
                     </h2>
-                    <div className="space-y-1 flex flex-col justify-start text-[9.5px]">
+                    <div className="space-y-1.5 text-[9.5px]">
                       {(defaultProfile.education || []).map((edu, idx) => (
-                        <div key={idx} className="flex flex-col justify-start">
+                        <div key={idx}>
                           <div className="font-bold text-[#111111]">
                             {edu.degree}{edu.fieldOfStudy ? ` (${edu.fieldOfStudy})` : ''} | {edu.graduationYear}
                           </div>
@@ -469,11 +469,11 @@ export default function DocumentPreview({ document, defaultProfile, onOpenUpload
                   </div>
 
                   {/* 2. TECHNICAL SKILLS */}
-                  <div className="flex flex-col justify-start">
+                  <div>
                     <h2 className="text-[12.5px] font-bold uppercase tracking-wider text-[#2C3B57] border-b-[1.5px] border-[#2C3B57] pb-0.5 mb-1.5">
                       TECHNICAL SKILLS
                     </h2>
-                    <div className="text-[9.5px] text-[#222222] space-y-1 flex flex-col justify-start leading-[1.3]">
+                    <div className="text-[9.5px] text-[#222222] space-y-1 leading-snug">
                       <div>
                         <strong>Languages:</strong> {defaultProfile.coreTechnicalSkills?.languages?.join(', ')}
                       </div>
@@ -494,11 +494,11 @@ export default function DocumentPreview({ document, defaultProfile, onOpenUpload
 
                   {/* 3. AWARDS */}
                   {defaultProfile.awards && defaultProfile.awards.length > 0 && (
-                    <div className="flex flex-col justify-start">
+                    <div>
                       <h2 className="text-[12.5px] font-bold uppercase tracking-wider text-[#2C3B57] border-b-[1.5px] border-[#2C3B57] pb-0.5 mb-1.5">
                         AWARDS
                       </h2>
-                      <ul className="list-disc list-outside ml-3.5 text-[9.5px] text-[#222222] space-y-1 leading-[1.3]">
+                      <ul className="list-disc list-outside ml-3.5 text-[9.5px] text-[#222222] space-y-0.5 leading-snug">
                         {defaultProfile.awards.map((award, idx) => (
                           <li key={idx}>{award}</li>
                         ))}
@@ -508,11 +508,11 @@ export default function DocumentPreview({ document, defaultProfile, onOpenUpload
 
                   {/* 4. CERTIFICATIONS */}
                   {defaultProfile.certifications && defaultProfile.certifications.length > 0 && (
-                    <div className="flex flex-col justify-start">
+                    <div>
                       <h2 className="text-[12.5px] font-bold uppercase tracking-wider text-[#2C3B57] border-b-[1.5px] border-[#2C3B57] pb-0.5 mb-1.5">
                         CERTIFICATIONS
                       </h2>
-                      <ul className="list-disc list-outside ml-3.5 text-[9.5px] text-[#222222] space-y-1 leading-[1.3]">
+                      <ul className="list-disc list-outside ml-3.5 text-[9.5px] text-[#222222] space-y-0.5 leading-snug">
                         {defaultProfile.certifications.map((c, idx) => (
                           <li key={idx}>
                             {c.name} – {c.issuer}

@@ -17,6 +17,13 @@ import {
   RotateCcw,
 } from 'lucide-react';
 
+import {
+  isSkillLogItem,
+  matchesLogCategory,
+} from '../services/sectionOptimizationService';
+
+export { isSkillLogItem, matchesLogCategory };
+
 /**
  * Dedicated Optimization Log & Approved Changes View
  * Centralized audit trail that tracks and renders:
@@ -38,9 +45,7 @@ export default function OptimizationLogView({
   // Filtered log items based on category and search query
   const filteredLog = useMemo(() => {
     return (log || []).filter((item) => {
-      const matchCategory =
-        selectedCategory === 'ALL' ||
-        (item.category && item.category.toUpperCase() === selectedCategory.toUpperCase());
+      const matchCategory = matchesLogCategory(item, selectedCategory);
 
       if (!matchCategory) return false;
 
@@ -54,6 +59,9 @@ export default function OptimizationLogView({
       const rationale = (item.rationale || '').toLowerCase();
       const original = (item.originalText || '').toLowerCase();
       const tailored = (item.tailoredText || '').toLowerCase();
+      const skillName = (item.skillName || '').toLowerCase();
+      const skillCategory = (item.skillCategory || '').toLowerCase();
+      const category = (item.category || '').toLowerCase();
 
       return (
         title.includes(q) ||
@@ -62,19 +70,22 @@ export default function OptimizationLogView({
         chip.includes(q) ||
         rationale.includes(q) ||
         original.includes(q) ||
-        tailored.includes(q)
+        tailored.includes(q) ||
+        skillName.includes(q) ||
+        skillCategory.includes(q) ||
+        category.includes(q)
       );
     });
   }, [log, selectedCategory, searchQuery]);
 
   // Aggregate statistics
   const stats = useMemo(() => {
-    const total = log.length;
-    const skills = log.filter((i) => i.category === 'Skills' || i.type === 'skill_addition').length;
-    const experience = log.filter((i) => i.category === 'Experience').length;
-    const projects = log.filter((i) => i.category === 'Projects').length;
-    const summary = log.filter((i) => i.category === 'Summary').length;
-    const instructions = log.filter((i) => i.type === 'custom_instruction').length;
+    const total = (log || []).length;
+    const skills = (log || []).filter((i) => matchesLogCategory(i, 'SKILLS')).length;
+    const experience = (log || []).filter((i) => matchesLogCategory(i, 'EXPERIENCE')).length;
+    const projects = (log || []).filter((i) => matchesLogCategory(i, 'PROJECTS')).length;
+    const summary = (log || []).filter((i) => matchesLogCategory(i, 'SUMMARY')).length;
+    const instructions = (log || []).filter((i) => i.type === 'custom_instruction').length;
 
     return { total, skills, experience, projects, summary, instructions };
   }, [log]);
@@ -102,31 +113,35 @@ ${item.tailoredText}
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const getCategoryIcon = (cat) => {
+  const getCategoryIcon = (cat, item) => {
+    if (isSkillLogItem(item) || cat?.toLowerCase() === 'skills' || cat?.toLowerCase() === 'skill') {
+      return <Wrench className="w-3.5 h-3.5 text-emerald-400" />;
+    }
     switch (cat?.toLowerCase()) {
       case 'experience':
         return <Briefcase className="w-3.5 h-3.5 text-blue-400" />;
       case 'projects':
+      case 'project':
         return <FolderGit2 className="w-3.5 h-3.5 text-violet-400" />;
       case 'summary':
         return <FileText className="w-3.5 h-3.5 text-indigo-400" />;
-      case 'skills':
-        return <Wrench className="w-3.5 h-3.5 text-emerald-400" />;
       default:
         return <Sparkles className="w-3.5 h-3.5 text-amber-400" />;
     }
   };
 
-  const getCategoryBadgeClass = (cat) => {
+  const getCategoryBadgeClass = (cat, item) => {
+    if (isSkillLogItem(item) || cat?.toLowerCase() === 'skills' || cat?.toLowerCase() === 'skill') {
+      return 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30';
+    }
     switch (cat?.toLowerCase()) {
       case 'experience':
         return 'bg-blue-500/15 text-blue-300 border-blue-500/30';
       case 'projects':
+      case 'project':
         return 'bg-violet-500/15 text-violet-300 border-violet-500/30';
       case 'summary':
         return 'bg-indigo-500/15 text-indigo-300 border-indigo-500/30';
-      case 'skills':
-        return 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30';
       default:
         return 'bg-slate-500/15 text-slate-300 border-slate-500/30';
     }
@@ -331,11 +346,12 @@ ${item.tailoredText}
                   {/* Category Badge */}
                   <span
                     className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider border ${getCategoryBadgeClass(
-                      item.category
+                      item.category,
+                      item
                     )}`}
                   >
-                    {getCategoryIcon(item.category)}
-                    <span>{item.category || 'General'}</span>
+                    {getCategoryIcon(item.category, item)}
+                    <span>{isSkillLogItem(item) ? 'Skills' : (item.category || 'General')}</span>
                   </span>
 
                   {/* Role / Context Title */}

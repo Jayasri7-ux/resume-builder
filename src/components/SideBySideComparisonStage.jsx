@@ -180,7 +180,7 @@ ${(profile?.certifications || []).map((c) => `- ${c.name} (${c.issuer})`).join('
       {/* Zero-Scroll Side-by-Side Dual Frame Display */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 h-[calc(100vh-172px)] min-h-[660px]">
         {/* Left Side: Original Native Word Resume Layout */}
-        <div className="h-full">
+        <div className="h-full w-full min-w-0 overflow-hidden flex flex-col">
           <DocumentPreview
             document={activeDocument}
             defaultProfile={profile}
@@ -189,7 +189,7 @@ ${(profile?.certifications || []).map((c) => `- ${c.name} (${c.issuer})`).join('
         </div>
 
         {/* Right Side: Fully Compiled Tailored Resume Sheet */}
-        <div className="h-full">
+        <div className="h-full w-full min-w-0 overflow-hidden flex flex-col">
           <TailoredDocumentPreview
             profile={profile}
             tailoredResult={tailoredResult}

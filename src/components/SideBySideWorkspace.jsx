@@ -53,7 +53,7 @@ export default function SideBySideWorkspace() {
 
   const [isUploadOpen, setIsUploadOpen] = useState(false);
 
-  // Workflow Stages: 'control' (Control Workspace) | 'log' (Optimization Log & Approved Changes) | 'preview' (Side-by-Side Comparison)
+  // Workflow Stages: 'control' (Control Workspace) | 'preview' (Side-by-Side Comparison) | 'log' (Optimization Log & Approved Changes)
   const [activeStage, setActiveStage] = useState('control');
   const [tailoredResult, setTailoredResult] = useState(null);
   const [baselineScore, setBaselineScore] = useState(null);
@@ -102,6 +102,7 @@ export default function SideBySideWorkspace() {
       {/* Workflow Stage Navigation Bar */}
       <div className="mb-2.5 flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-1.5 p-1 bg-slate-900 border border-slate-800 rounded-xl shadow-sm">
+          {/* Tab 1: Control Workspace */}
           <button
             onClick={() => setActiveStage('control')}
             className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 ${
@@ -115,23 +116,7 @@ export default function SideBySideWorkspace() {
             <span className="text-[10px] font-normal opacity-80 hidden sm:inline">(Steps 1-3: JD &amp; Edits)</span>
           </button>
 
-          <button
-            onClick={() => setActiveStage('log')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 ${
-              activeStage === 'log'
-                ? 'bg-indigo-600 text-white shadow-sm'
-                : 'text-slate-400 hover:text-white hover:bg-slate-800'
-            }`}
-          >
-            <ClipboardList className="w-3.5 h-3.5" />
-            <span>Optimization Log &amp; Approved Changes</span>
-            {approvedChangesLog.length > 0 && (
-              <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                {approvedChangesLog.length}
-              </span>
-            )}
-          </button>
-
+          {/* Tab 2: Side-by-Side Comparison (Step 4: Twin Preview & Export) */}
           <button
             onClick={() => {
               if (tailoredResult) setActiveStage('preview');
@@ -148,6 +133,24 @@ export default function SideBySideWorkspace() {
             <Columns2 className="w-3.5 h-3.5" />
             <span>Side-by-Side Comparison</span>
             <span className="text-[10px] font-normal opacity-80 hidden sm:inline">(Step 4: Twin Preview &amp; Export)</span>
+          </button>
+
+          {/* Tab 3: Optimization Log & Approved Changes */}
+          <button
+            onClick={() => setActiveStage('log')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 ${
+              activeStage === 'log'
+                ? 'bg-indigo-600 text-white shadow-sm'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800'
+            }`}
+          >
+            <ClipboardList className="w-3.5 h-3.5" />
+            <span>Optimization Log &amp; Approved Changes</span>
+            {approvedChangesLog.length > 0 && (
+              <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                {approvedChangesLog.length}
+              </span>
+            )}
           </button>
         </div>
 
@@ -181,21 +184,7 @@ export default function SideBySideWorkspace() {
         </div>
       </div>
 
-      {/* Stage 2: Dedicated Optimization Log & Approved Changes View */}
-      <div className={activeStage === 'log' ? 'block' : 'hidden'}>
-        {activeStage === 'log' && (
-          <OptimizationLogView
-            log={approvedChangesLog}
-            tailoredResult={tailoredResult}
-            onBackToControls={handleBackToControls}
-            onProceedToPreview={() => {
-              if (tailoredResult) setActiveStage('preview');
-            }}
-          />
-        )}
-      </div>
-
-      {/* Stage 3: Dedicated Zero-Scroll Side-by-Side Comparison View */}
+      {/* Stage 2: Dedicated Zero-Scroll Side-by-Side Comparison View */}
       <div className={activeStage === 'preview' ? 'block' : 'hidden'}>
         {activeStage === 'preview' && (
           <SideBySideComparisonStage
@@ -205,6 +194,20 @@ export default function SideBySideWorkspace() {
             baselineScore={baselineScore}
             onBackToControls={handleBackToControls}
             onOpenUpload={() => setIsUploadOpen(true)}
+          />
+        )}
+      </div>
+
+      {/* Stage 3: Dedicated Optimization Log & Approved Changes View */}
+      <div className={activeStage === 'log' ? 'block' : 'hidden'}>
+        {activeStage === 'log' && (
+          <OptimizationLogView
+            log={approvedChangesLog}
+            tailoredResult={tailoredResult}
+            onBackToControls={handleBackToControls}
+            onProceedToPreview={() => {
+              if (tailoredResult) setActiveStage('preview');
+            }}
           />
         )}
       </div>

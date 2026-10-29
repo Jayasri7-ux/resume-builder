@@ -21,6 +21,7 @@ import {
   Globe,
   ClipboardList,
   Download,
+  Columns2,
 } from 'lucide-react';
 import { SAMPLE_JOB_DESCRIPTIONS } from '../data/sampleJobDescriptions';
 import { tailorResumePipeline, compileFinalTailoredResume } from '../services/tailoringService';
@@ -65,12 +66,23 @@ export default function TailoredResumeWorkspace({
   const approvedChangesLog = externalApprovedLog !== undefined ? externalApprovedLog : internalApprovedLog;
 
   const setApprovedChangesLog = useCallback((updater) => {
+    // 1. Update internal state
     setInternalApprovedLog((prev) => {
       const base = externalApprovedLog !== undefined ? externalApprovedLog : prev;
-      const next = typeof updater === 'function' ? updater(base) : updater;
-      onApprovedChangesChange?.(next);
-      return next;
+      return typeof updater === 'function' ? updater(base) : updater;
     });
+
+    // 2. Safely synchronize external state handler without invoking side-effects inside state updater
+    if (onApprovedChangesChange) {
+      if (typeof updater === 'function') {
+        onApprovedChangesChange((prevParent) => {
+          const base = Array.isArray(prevParent) ? prevParent : (externalApprovedLog || []);
+          return updater(base);
+        });
+      } else {
+        onApprovedChangesChange(updater);
+      }
+    }
   }, [externalApprovedLog, onApprovedChangesChange]);
   // Job Description Input State (starts completely empty on load)
   const [jobDescription, setJobDescription] = useState('');
@@ -551,105 +563,124 @@ export default function TailoredResumeWorkspace({
 
   // Human-in-the-Loop Toggle Handlers
   const handleToggleApprove = (techId, isApproved) => {
-    let toggledTech = null;
-    setMissingTechList((prev) => {
-      const updated = prev.map((item) => {
-        if (item.id === techId) {
-          toggledTech = { ...item, approved: isApproved };
-          return toggledTech;
-        }
-        return item;
+    // Synchronously resolve target technology item from current missingTechList or techXRayData
+    let toggledTech = missingTechList.find(
+      (item) => item.id === techId || item.name.toLowerCase() === String(techId).toLowerCase()
+    );
+    if (!toggledTech && techXRayData?.missingTech) {
+      toggledTech = techXRayData.missingTech.find(
+        (item) => item.id === techId || item.name.toLowerCase() === String(techId).toLowerCase()
+      );
+    }
+    if (!toggledTech) {
+      toggledTech = {
+        id: String(techId).toLowerCase().replace(/[^a-z0-9]/g, '-'),
+        name: String(techId),
+        category: 'Skills',
+        definition: '',
+        approved: isApproved,
+      };
+    } else {
+      toggledTech = { ...toggledTech, approved: isApproved };
+    }
+
+    const updated = missingTechList.some(
+      (item) => item.id === techId || item.name.toLowerCase() === String(techId).toLowerCase()
+    )
+      ? missingTechList.map((item) => {
+          if (item.id === techId || item.name.toLowerCase() === String(techId).toLowerCase()) {
+            return { ...item, approved: isApproved };
+          }
+          return item;
+        })
+      : [...missingTechList, toggledTech];
+
+    setMissingTechList(updated);
+
+    const approvedNames = updated.filter((t) => t.approved).map((t) => t.name);
+    const rejectedNames = updated.filter((t) => !t.approved).map((t) => t.name);
+    syncTailoredWithApprovals(approvedNames, rejectedNames);
+
+    const skillId = `skill_${toggledTech.name.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+    if (isApproved) {
+      const rationale = buildOptimizationRationale({
+        type: 'skill_addition',
+        category: 'Skills',
+        chipLabel: toggledTech.name,
+        instruction: 'Approved from Missing Tech X-Ray',
+        roleOrContext: toggledTech.name,
       });
-      const approvedNames = updated.filter((t) => t.approved).map((t) => t.name);
-      const rejectedNames = updated.filter((t) => !t.approved).map((t) => t.name);
-      syncTailoredWithApprovals(approvedNames, rejectedNames);
-      return updated;
-    });
 
-    if (toggledTech) {
-      const skillId = `skill_${toggledTech.name.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
-      if (isApproved) {
-        const rationale = buildOptimizationRationale({
-          type: 'skill_addition',
-          category: 'Skills',
-          chipLabel: toggledTech.name,
-          instruction: 'Approved from Missing Tech X-Ray',
-          roleOrContext: toggledTech.name,
-        });
-
-        const entry = {
-          id: skillId,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-          isoTimestamp: new Date().toISOString(),
-          type: 'skill_addition',
-          category: 'Skills',
-          title: `Added Skill: ${toggledTech.name}`,
-          roleOrContext: `Technical Skills Matrix (${toggledTech.category || 'Missing Tech'})`,
-          instruction: 'Approved from Missing Tech X-Ray',
-          chipLabel: toggledTech.name,
-          rationale,
-          originalText: `Skill "${toggledTech.name}" was not originally listed in master technical skills.`,
-          tailoredText: `Approved and incorporated "${toggledTech.name}" into technical skills (${toggledTech.category || 'Skills'}).`,
-          status: 'approved',
-          skillName: toggledTech.name,
-          skillCategory: toggledTech.category || 'Skills',
-        };
-        setApprovedChangesLog((curr) => [entry, ...curr.filter((item) => item.id !== skillId)]);
-      } else {
-        setApprovedChangesLog((curr) => curr.filter((item) => item.id !== skillId));
-      }
+      const entry = {
+        id: skillId,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        isoTimestamp: new Date().toISOString(),
+        type: 'skill_addition',
+        category: 'Skills',
+        title: `Added Skill: ${toggledTech.name}`,
+        roleOrContext: `Technical Skills Matrix (${toggledTech.category || 'Missing Tech'})`,
+        instruction: 'Approved from Missing Tech X-Ray',
+        chipLabel: toggledTech.name,
+        rationale,
+        originalText: `Skill "${toggledTech.name}" was not originally listed in master technical skills.`,
+        tailoredText: `Approved and incorporated "${toggledTech.name}" into technical skills (${toggledTech.category || 'Skills'}).`,
+        status: 'approved',
+        skillName: toggledTech.name,
+        skillCategory: toggledTech.category || 'Skills',
+      };
+      setApprovedChangesLog((curr) => [entry, ...(curr || []).filter((item) => item.id !== skillId && item.skillName !== toggledTech.name)]);
+    } else {
+      setApprovedChangesLog((curr) => (curr || []).filter((item) => item.id !== skillId && item.skillName !== toggledTech.name));
     }
   };
 
   const handleApproveAll = () => {
-    setMissingTechList((prev) => {
-      const updated = prev.map((item) => ({ ...item, approved: true }));
-      const approvedNames = updated.map((t) => t.name);
-      syncTailoredWithApprovals(approvedNames, []);
+    const updated = missingTechList.map((item) => ({ ...item, approved: true }));
+    setMissingTechList(updated);
 
-      // Batch log all approved skills
-      const ts = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      const newEntries = updated.map((t) => ({
-        id: `skill_${t.name.toLowerCase().replace(/[^a-z0-9]/g, '_')}`,
-        timestamp: ts,
-        isoTimestamp: new Date().toISOString(),
+    const approvedNames = updated.map((t) => t.name);
+    syncTailoredWithApprovals(approvedNames, []);
+
+    // Batch log all approved skills
+    const ts = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const newEntries = updated.map((t) => ({
+      id: `skill_${t.name.toLowerCase().replace(/[^a-z0-9]/g, '_')}`,
+      timestamp: ts,
+      isoTimestamp: new Date().toISOString(),
+      type: 'skill_addition',
+      category: 'Skills',
+      title: `Added Skill: ${t.name}`,
+      roleOrContext: `Technical Skills Matrix (${t.category || 'Missing Tech'})`,
+      instruction: 'Approved from Missing Tech X-Ray',
+      chipLabel: t.name,
+      rationale: buildOptimizationRationale({
         type: 'skill_addition',
         category: 'Skills',
-        title: `Added Skill: ${t.name}`,
-        roleOrContext: `Technical Skills Matrix (${t.category || 'Missing Tech'})`,
-        instruction: 'Approved from Missing Tech X-Ray',
         chipLabel: t.name,
-        rationale: buildOptimizationRationale({
-          type: 'skill_addition',
-          category: 'Skills',
-          chipLabel: t.name,
-          instruction: 'Approved from Missing Tech X-Ray',
-        }),
-        originalText: `Skill "${t.name}" was not originally listed in master technical skills.`,
-        tailoredText: `Approved and incorporated "${t.name}" into technical skills (${t.category || 'Skills'}).`,
-        status: 'approved',
-        skillName: t.name,
-        skillCategory: t.category || 'Skills',
-      }));
+        instruction: 'Approved from Missing Tech X-Ray',
+        roleOrContext: t.name,
+      }),
+      originalText: `Skill "${t.name}" was not originally listed in master technical skills.`,
+      tailoredText: `Approved and incorporated "${t.name}" into technical skills (${t.category || 'Skills'}).`,
+      status: 'approved',
+      skillName: t.name,
+      skillCategory: t.category || 'Skills',
+    }));
 
-      setApprovedChangesLog((curr) => {
-        const nonSkills = curr.filter((i) => i.type !== 'skill_addition');
-        return [...newEntries, ...nonSkills];
-      });
-
-      return updated;
+    setApprovedChangesLog((curr) => {
+      const nonSkills = (curr || []).filter((i) => i.type !== 'skill_addition' && i.category !== 'Skills');
+      return [...newEntries, ...nonSkills];
     });
   };
 
   const handleRejectAll = () => {
-    setMissingTechList((prev) => {
-      const updated = prev.map((item) => ({ ...item, approved: false }));
-      const rejectedNames = updated.map((t) => t.name);
-      syncTailoredWithApprovals([], rejectedNames);
+    const updated = missingTechList.map((item) => ({ ...item, approved: false }));
+    setMissingTechList(updated);
 
-      setApprovedChangesLog((curr) => curr.filter((i) => i.type !== 'skill_addition'));
-      return updated;
-    });
+    const rejectedNames = updated.map((t) => t.name);
+    syncTailoredWithApprovals([], rejectedNames);
+
+    setApprovedChangesLog((curr) => (curr || []).filter((i) => i.type !== 'skill_addition' && i.category !== 'Skills'));
   };
 
   // Handle live section review decision changes (Approve vs Keep Original)
@@ -856,7 +887,7 @@ export default function TailoredResumeWorkspace({
 
       setExportNotice({
         type: 'success',
-        message: 'Tailored PDF downloaded successfully (Single-Page Guaranteed with Embedded Contact Icons).',
+        message: 'Tailored PDF downloaded successfully (Strict Single-Page Guaranteed with Dynamic Font Scaling & Embedded Contact Icons).',
       });
       setTimeout(() => setExportNotice(null), 4000);
     } catch (err) {
@@ -897,7 +928,7 @@ export default function TailoredResumeWorkspace({
 
       setExportNotice({
         type: 'success',
-        message: 'Tailored Word (.docx) document downloaded with native styling & embedded contact icons.',
+        message: 'Tailored Word (.docx) document downloaded with dynamic scaling, native styling & embedded contact icons.',
       });
       setTimeout(() => setExportNotice(null), 4000);
     } catch (err) {
@@ -1334,6 +1365,26 @@ ${tailoredResult.highlightedProjects
             <span className="hidden md:inline text-[11px]">Base Profile</span>
           </button>
 
+          {/* Side-by-Side Comparison Tab Switcher */}
+          <button
+            type="button"
+            onClick={() => {
+              if (tailoredResult && onNavigateToStage) {
+                onNavigateToStage('preview');
+              }
+            }}
+            disabled={!tailoredResult}
+            title={tailoredResult ? 'View Side-by-Side Comparison (Step 4: Twin Preview & Export)' : 'Generate tailored resume to view preview'}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border transition-all ${
+              tailoredResult
+                ? 'bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-700/70 hover:text-white cursor-pointer'
+                : 'text-slate-600 bg-slate-950/40 border-slate-800/40 cursor-not-allowed opacity-60'
+            }`}
+          >
+            <Columns2 className="w-3.5 h-3.5 text-indigo-400" />
+            <span className="hidden sm:inline">Side-by-Side Comparison</span>
+          </button>
+
           {/* Optimization Log Tab Switcher */}
           <button
             type="button"
@@ -1363,7 +1414,7 @@ ${tailoredResult.highlightedProjects
       </div>
 
       {/* Main Scrollable Workspace */}
-      <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3 flex flex-col justify-start">
+      <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3">
         {/* Logical Workflow Progression Bar */}
         <div className="bg-slate-950/80 border border-slate-800/80 rounded-xl px-3 py-2 flex items-center justify-between text-xs gap-2 flex-wrap">
           <div className="flex items-center gap-1.5 sm:gap-2.5 flex-wrap">
@@ -1428,12 +1479,30 @@ ${tailoredResult.highlightedProjects
             <span className="text-slate-600 text-xs hidden sm:inline">&rarr;</span>
 
             {/* Step 4 Pill */}
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium text-slate-500 bg-slate-900/40 border border-slate-800/40">
-              <span className="w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-bold bg-slate-800 text-slate-500">
+            <button
+              type="button"
+              onClick={() => {
+                if (tailoredResult && onNavigateToStage) {
+                  onNavigateToStage('preview');
+                }
+              }}
+              disabled={!tailoredResult}
+              title={tailoredResult ? 'View Side-by-Side Twin Preview & Export' : 'Generate tailored resume to view preview'}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all ${
+                tailoredResult
+                  ? 'bg-slate-900 text-indigo-300 border border-indigo-500/30 hover:bg-slate-800 cursor-pointer'
+                  : 'text-slate-500 bg-slate-900/40 border border-slate-800/40 cursor-not-allowed opacity-60'
+              }`}
+            >
+              <span
+                className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-bold ${
+                  tailoredResult ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-500'
+                }`}
+              >
                 4
               </span>
               <span>Step 4: Twin Preview &amp; Export</span>
-            </div>
+            </button>
 
             <span className="text-slate-600 text-xs hidden sm:inline">&bull;</span>
 
@@ -1471,7 +1540,7 @@ ${tailoredResult.highlightedProjects
                   type="button"
                   onClick={handleDownloadPdf}
                   disabled={isExportingPdf}
-                  title="Download Tailored PDF Document (Single-Page Guaranteed with Embedded Icons)"
+                  title="Download PDF Document (Single-Page Guaranteed with Embedded Icons)"
                   className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-slate-900 hover:bg-slate-800 text-rose-300 border border-rose-500/30 hover:text-white transition-all cursor-pointer shadow-sm"
                 >
                   <Download className="w-3 h-3 text-rose-400" />
@@ -1481,7 +1550,7 @@ ${tailoredResult.highlightedProjects
                   type="button"
                   onClick={handleDownloadDocx}
                   disabled={isExportingDocx}
-                  title="Download Tailored Word Document (.docx)"
+                  title="Download DOCX Document (.docx)"
                   className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-slate-900 hover:bg-slate-800 text-indigo-300 border border-indigo-500/30 hover:text-white transition-all cursor-pointer shadow-sm"
                 >
                   <Download className="w-3 h-3 text-indigo-400" />
@@ -2056,7 +2125,7 @@ ${tailoredResult.highlightedProjects
 
         {/* Step 2: AI Suggested Content & Active Custom Instructions */}
         {!isTailoring && tailoredResult && (
-          <div className="space-y-4 flex flex-col justify-start">
+          <div className="space-y-4">
             {/* Step 2 Banner: Guidance for Reviewing Suggestions & Custom Edits */}
             <div className="p-3 bg-gradient-to-r from-indigo-950/70 via-slate-900 to-slate-950 border border-indigo-500/30 rounded-xl flex items-center justify-between gap-3 flex-wrap">
               <div className="space-y-0.5">
@@ -2136,14 +2205,14 @@ ${tailoredResult.highlightedProjects
             </div>
 
             {/* Tailored Professional Summary */}
-            <div className="flex flex-col justify-start bg-slate-950/70 border border-slate-800 rounded-xl p-3.5 space-y-2">
+            <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3.5 space-y-2">
               <div className="flex items-center justify-between">
                 <h3 className="text-xs font-semibold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
                   <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
                   Tailored Professional Summary
                 </h3>
               </div>
-              <p className="text-xs text-slate-300 leading-[1.3] bg-slate-900/60 p-3 rounded-lg border border-slate-800">
+              <p className="text-xs text-slate-300 leading-relaxed bg-slate-900/60 p-3 rounded-lg border border-slate-800">
                 {tailoredResult.tailoredSummary}
               </p>
               <SectionCustomInstruction
@@ -2161,7 +2230,7 @@ ${tailoredResult.highlightedProjects
             {/* Skills Alignment Matrix */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {/* Matched Skills */}
-              <div className="flex flex-col justify-start bg-slate-950/70 border border-slate-800 rounded-xl p-3.5 space-y-2">
+              <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3.5 space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-semibold text-slate-200 flex items-center gap-1.5">
                     <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
@@ -2181,7 +2250,7 @@ ${tailoredResult.highlightedProjects
               </div>
 
               {/* Recommended / Missing Keywords */}
-              <div className="flex flex-col justify-start bg-slate-950/70 border border-slate-800 rounded-xl p-3.5 space-y-2">
+              <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3.5 space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-semibold text-slate-200 flex items-center gap-1.5">
                     <TrendingUp className="w-3.5 h-3.5 text-amber-400" />
@@ -2241,7 +2310,7 @@ ${tailoredResult.highlightedProjects
             )}
 
             {/* Tailored Experience Bullet Points */}
-            <div className="flex flex-col justify-start bg-slate-950/70 border border-slate-800 rounded-xl p-3.5 space-y-3">
+            <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3.5 space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="text-xs font-semibold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
                   <Briefcase className="w-3.5 h-3.5 text-indigo-400" />
@@ -2249,11 +2318,11 @@ ${tailoredResult.highlightedProjects
                 </h3>
               </div>
 
-              <div className="space-y-3 flex flex-col justify-start">
+              <div className="space-y-3">
                 {tailoredResult.highlightedExperiences?.map((exp, idx) => (
                   <div
                     key={idx}
-                    className="flex flex-col justify-start p-3 rounded-lg bg-slate-900/80 border border-slate-800 space-y-2"
+                    className="p-3 rounded-lg bg-slate-900/80 border border-slate-800 space-y-2"
                   >
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between text-xs gap-1">
                       <div>
@@ -2267,7 +2336,7 @@ ${tailoredResult.highlightedProjects
 
                     <ul className="space-y-1 text-xs text-slate-300 list-disc list-inside">
                       {exp.bulletPoints?.map((bullet, bIdx) => (
-                        <li key={bIdx} className="leading-[1.3]">
+                        <li key={bIdx} className="leading-relaxed">
                           {bullet}
                         </li>
                       ))}
@@ -2290,7 +2359,7 @@ ${tailoredResult.highlightedProjects
             </div>
 
             {/* Tailored Projects */}
-            <div className="flex flex-col justify-start bg-slate-950/70 border border-slate-800 rounded-xl p-3.5 space-y-3">
+            <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3.5 space-y-3">
               <h3 className="text-xs font-semibold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
                 <FileCode2 className="w-3.5 h-3.5 text-indigo-400" />
                 Tailored Projects &amp; Portfolio Highlights
@@ -2300,7 +2369,7 @@ ${tailoredResult.highlightedProjects
                 {tailoredResult.highlightedProjects?.map((proj, idx) => (
                   <div
                     key={idx}
-                    className="flex flex-col justify-start p-3 rounded-lg bg-slate-900/80 border border-slate-800 space-y-1.5 text-xs"
+                    className="p-3 rounded-lg bg-slate-900/80 border border-slate-800 space-y-1.5 text-xs"
                   >
                     <div className="font-semibold text-white">{proj.name}</div>
                     <div className="flex flex-wrap gap-1">
@@ -2313,7 +2382,7 @@ ${tailoredResult.highlightedProjects
                         </span>
                       ))}
                     </div>
-                    <p className="text-slate-300 leading-[1.3] text-[11px]">
+                    <p className="text-slate-300 leading-relaxed text-[11px]">
                       {proj.description}
                     </p>
 
@@ -2355,28 +2424,6 @@ ${tailoredResult.highlightedProjects
                 </span>
               </div>
               <div className="flex items-center gap-2 flex-wrap">
-                <button
-                  type="button"
-                  onClick={handleDownloadPdf}
-                  disabled={isExportingPdf}
-                  title="Download Tailored PDF Document (Single-Page Guaranteed with Embedded Contact Icons)"
-                  className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700 transition-colors cursor-pointer flex items-center gap-1.5 text-xs font-semibold shadow-sm"
-                >
-                  <Download className="w-3.5 h-3.5 text-rose-400" />
-                  <span>{isExportingPdf ? 'Exporting PDF...' : 'Download PDF'}</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleDownloadDocx}
-                  disabled={isExportingDocx}
-                  title="Download Tailored Word Document (.docx)"
-                  className="px-3.5 py-2 rounded-xl bg-indigo-950/70 hover:bg-indigo-900/80 text-indigo-200 hover:text-white border border-indigo-700/50 transition-colors cursor-pointer flex items-center gap-1.5 text-xs font-semibold shadow-sm"
-                >
-                  <Download className="w-3.5 h-3.5 text-indigo-400" />
-                  <span>{isExportingDocx ? 'Exporting Word...' : 'Download DOCX'}</span>
-                </button>
-
                 <button
                   onClick={handleGenerateFinalTailoredResume}
                   className="px-5 py-2 bg-gradient-to-r from-emerald-600 via-teal-500 to-indigo-600 hover:from-emerald-500 hover:to-teal-400 text-white font-semibold text-xs rounded-xl shadow-lg shadow-emerald-600/25 flex items-center justify-center gap-2 cursor-pointer transition-all shrink-0"

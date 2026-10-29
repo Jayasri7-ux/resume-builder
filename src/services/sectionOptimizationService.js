@@ -793,7 +793,21 @@ export function buildOptimizationRationale({
   const promptText = (chipLabel || instruction || '').trim();
   const lowerPrompt = promptText.toLowerCase();
 
-  // 1. Quick-Action Chips Rationale
+  // 1. Skill Additions (Priority check for explicit skill addition type)
+  if (
+    type === 'skill_addition' ||
+    (category === 'Skills' &&
+      !lowerPrompt.includes('quantif') &&
+      !lowerPrompt.includes('architect') &&
+      !lowerPrompt.includes('short') &&
+      !lowerPrompt.includes('punch') &&
+      !lowerPrompt.includes('leader'))
+  ) {
+    const techName = chipLabel || instruction || roleOrContext || 'Technology';
+    return `Approved from JD Tech X-Ray to increase ATS keyword alignment for ${techName}`;
+  }
+
+  // 2. Quick-Action Chips Rationale
   if (lowerPrompt.includes('quantif')) {
     return 'Added quantifiable metrics, percentages, and data scale to demonstrate measurable business impact';
   }
@@ -847,6 +861,56 @@ export function buildOptimizationRationale({
   return 'Optimized content to align with target role requirements and ATS keyword criteria';
 }
 
+/**
+ * Helper to determine if an audit item is a skill-type item.
+ */
+export function isSkillLogItem(item) {
+  if (!item) return false;
+  if (item.type === 'skill_addition' || item.type === 'skill') return true;
+  if (Boolean(item.skillName)) return true;
+  const cat = String(item.category || '').trim().toLowerCase();
+  return cat === 'skills' || cat === 'skill' || cat === 'technical skills' || cat.startsWith('skill');
+}
+
+/**
+ * Helper to reliably match an audit item against an active category tab.
+ */
+export function matchesLogCategory(item, selectedCategory) {
+  if (!item) return false;
+  const target = String(selectedCategory || 'ALL').trim().toUpperCase();
+  if (target === 'ALL') return true;
+
+  if (target === 'SKILLS') {
+    return isSkillLogItem(item);
+  }
+
+  if (target === 'EXPERIENCE') {
+    const cat = String(item.category || '').trim().toLowerCase();
+    return cat === 'experience' || String(item.sectionKey || '').startsWith('exp');
+  }
+
+  if (target === 'PROJECTS') {
+    const cat = String(item.category || '').trim().toLowerCase();
+    return (
+      cat === 'projects' ||
+      cat === 'project' ||
+      String(item.sectionKey || '').startsWith('proj')
+    );
+  }
+
+  if (target === 'SUMMARY') {
+    const cat = String(item.category || '').trim().toLowerCase();
+    return (
+      cat === 'summary' ||
+      item.sectionKey === 'summary' ||
+      item.sectionKey === 'professionalSummary'
+    );
+  }
+
+  const cat = String(item.category || '').trim().toUpperCase();
+  return cat === target;
+}
+
 export default {
   countWords,
   enforceLengthConstraint,
@@ -858,5 +922,7 @@ export default {
   sanitizeCompletedSentence,
   extractTextString,
   buildOptimizationRationale,
+  isSkillLogItem,
+  matchesLogCategory,
   DANGLING_END_WORDS,
 };

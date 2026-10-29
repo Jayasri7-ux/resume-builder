@@ -220,7 +220,13 @@ export function computeDynamicContentSpacing({
     densityTier = 'relaxed';
   }
 
-  // 4. DOCX OpenXML Spacing Metrics (20 dxa = 1 pt)
+  // 4. Content Densities and Dynamic Thresholds
+  const isHeavy = totalLeftWords > 220 || totalLeftItems >= 8 || rightColumnItemLoad >= 22;
+  const isUltraHeavy = totalLeftWords > 270 || totalLeftItems >= 10 || rightColumnItemLoad >= 25;
+  const isExtreme = totalLeftWords > 340 || totalLeftItems >= 13 || rightColumnItemLoad >= 29;
+  const isUltraRelaxed = totalLeftWords < 80 && totalLeftItems <= 3 && rightColumnItemLoad <= 14;
+
+  // 5. DOCX OpenXML Spacing Metrics (20 dxa = 1 pt)
   // Enforces clean, uniform natural line-height (1.25x-1.35x -> 312 dxa = 1.30x)
   // and controlled paragraph bottom margins (spaceAfter: 3-4pt -> 60-80 dxa)
   let docxSpacing = {
@@ -237,6 +243,13 @@ export function computeDynamicContentSpacing({
     projectDescAfter: 70,  // 3.5pt controlled paragraph bottom margin (3-4pt)
     bodyLineSpacing: 312,  // 1.30x uniform natural line height (1.25 - 1.35)
     bodyFontSize: 18,      // 9pt crisp uncompressed font
+    headingFontSize: 22,   // 11pt
+    summaryFontSize: 19,   // 9.5pt
+    companyFontSize: 20,   // 10pt
+    titleFontSize: 18,     // 9pt
+    projectNameFontSize: 20, // 10pt
+    projectTechFontSize: 18, // 9pt
+    nameFontSize: 72,      // 36pt
 
     sidebarHeadingBefore: 90, // 4.5pt
     sidebarHeadingAfter: 60,  // 3pt
@@ -253,7 +266,7 @@ export function computeDynamicContentSpacing({
   };
 
   if (densityTier === 'compact') {
-    // For longer content: enforce uniform natural line-height (1.30x) without font
+    // For standard lengthy content: enforce uniform natural line-height (1.30x) without font
     // or tracking compression, applying controlled 3-4pt paragraph margins (60 dxa = 3pt)
     docxSpacing = {
       headingBefore: 80,   // 4pt
@@ -269,6 +282,13 @@ export function computeDynamicContentSpacing({
       projectDescAfter: 65,// ~3.25pt (3-4pt)
       bodyLineSpacing: 312,// 1.30x uniform natural line height (no line compression)
       bodyFontSize: 18,    // 9pt (Strict Anti-Distortion: never compressed)
+      headingFontSize: 22,
+      summaryFontSize: 19,
+      companyFontSize: 20,
+      titleFontSize: 18,
+      projectNameFontSize: 20,
+      projectTechFontSize: 18,
+      nameFontSize: 72,
 
       sidebarHeadingBefore: 80,
       sidebarHeadingAfter: 50,
@@ -300,6 +320,13 @@ export function computeDynamicContentSpacing({
       projectDescAfter: 70,// 3.5pt (controlled 3-4pt)
       bodyLineSpacing: 312,// 1.30x uniform natural line height
       bodyFontSize: 18,    // 9pt (Strict Anti-Distortion: never compressed)
+      headingFontSize: 22,
+      summaryFontSize: 19,
+      companyFontSize: 20,
+      titleFontSize: 18,
+      projectNameFontSize: 20,
+      projectTechFontSize: 18,
+      nameFontSize: 72,
 
       sidebarHeadingBefore: 90,
       sidebarHeadingAfter: 60,
@@ -316,36 +343,124 @@ export function computeDynamicContentSpacing({
     };
   }
 
+  // Dynamic font-size scaling & padding adjustment for ultra-heavy / extreme content loads
+  if (isExtreme) {
+    docxSpacing.bodyFontSize = 16; // 8pt
+    docxSpacing.sidebarFontSize = 16;
+    docxSpacing.headingFontSize = 18; // 9pt
+    docxSpacing.summaryFontSize = 17; // 8.5pt
+    docxSpacing.companyFontSize = 18; // 9pt
+    docxSpacing.titleFontSize = 16;
+    docxSpacing.projectNameFontSize = 18;
+    docxSpacing.projectTechFontSize = 16;
+    docxSpacing.nameFontSize = 58;
+    docxSpacing.headingBefore = 50;
+    docxSpacing.headingAfter = 30;
+    docxSpacing.summaryAfter = 45;
+    docxSpacing.bulletAfter = 42;
+    docxSpacing.projectDescAfter = 45;
+    docxSpacing.sidebarHeadingBefore = 50;
+    docxSpacing.sidebarHeadingAfter = 30;
+    docxSpacing.educationInstAfter = 45;
+    docxSpacing.skillsItemAfter = 42;
+    docxSpacing.awardItemAfter = 42;
+    docxSpacing.certItemAfter = 42;
+    docxSpacing.bottomCellMargin = 40;
+  } else if (isUltraHeavy) {
+    docxSpacing.bodyFontSize = 17; // 8.5pt
+    docxSpacing.sidebarFontSize = 17;
+    docxSpacing.headingFontSize = 20; // 10pt
+    docxSpacing.summaryFontSize = 18; // 9pt
+    docxSpacing.companyFontSize = 19; // 9.5pt
+    docxSpacing.titleFontSize = 17;
+    docxSpacing.projectNameFontSize = 19;
+    docxSpacing.projectTechFontSize = 17;
+    docxSpacing.nameFontSize = 64;
+    docxSpacing.headingBefore = 65;
+    docxSpacing.headingAfter = 40;
+    docxSpacing.summaryAfter = 55;
+    docxSpacing.bulletAfter = 50;
+    docxSpacing.projectDescAfter = 55;
+    docxSpacing.sidebarHeadingBefore = 65;
+    docxSpacing.sidebarHeadingAfter = 40;
+    docxSpacing.educationInstAfter = 52;
+    docxSpacing.skillsItemAfter = 50;
+    docxSpacing.awardItemAfter = 50;
+    docxSpacing.certItemAfter = 50;
+    docxSpacing.bottomCellMargin = 60;
+    docxSpacing.bodyLineSpacing = 288;
+  } else if (isHeavy) {
+    docxSpacing.bodyFontSize = 17; // 8.5pt
+    docxSpacing.sidebarFontSize = 17;
+    docxSpacing.headingFontSize = 20; // 10pt
+    docxSpacing.summaryFontSize = 18; // 9pt
+    docxSpacing.companyFontSize = 19; // 9.5pt
+    docxSpacing.titleFontSize = 17;
+    docxSpacing.projectNameFontSize = 19;
+    docxSpacing.projectTechFontSize = 17;
+    docxSpacing.nameFontSize = 64;
+    docxSpacing.headingBefore = 70;
+    docxSpacing.headingAfter = 45;
+    docxSpacing.summaryAfter = 55;
+    docxSpacing.bulletAfter = 50;
+    docxSpacing.projectDescAfter = 55;
+    docxSpacing.sidebarHeadingBefore = 70;
+    docxSpacing.sidebarHeadingAfter = 45;
+    docxSpacing.educationInstAfter = 55;
+    docxSpacing.skillsItemAfter = 52;
+    docxSpacing.awardItemAfter = 52;
+    docxSpacing.certItemAfter = 52;
+    docxSpacing.bottomCellMargin = 70;
+    docxSpacing.bodyLineSpacing = 288;
+  }
+
+  // Strict Original Dimensions: Keep fixed master template margins and column bounds (0.5in = 720 dxa)
+  docxSpacing.pageMarginTop = 720;
+  docxSpacing.pageMarginBottom = 720;
+  docxSpacing.pageMarginSide = 720;
+
   // 5. Dynamic Content-Aware Page Margins & PDF Spacing Metrics
-  const isHeavy = totalLeftWords > 220 || totalLeftItems >= 8 || rightColumnItemLoad >= 22;
-  const isUltraRelaxed = totalLeftWords < 80 && totalLeftItems <= 3 && rightColumnItemLoad <= 14;
-
-  // Dynamically auto-adjust OpenXML DOCX page margins to enforce single-page fit without distortion
-  docxSpacing.pageMarginTop = isHeavy ? 540 : densityTier === 'compact' ? 640 : isUltraRelaxed ? 780 : 720;
-  docxSpacing.pageMarginBottom = isHeavy ? 540 : densityTier === 'compact' ? 640 : isUltraRelaxed ? 780 : 720;
-  docxSpacing.pageMarginSide = isHeavy ? 600 : densityTier === 'compact' ? 660 : 720;
-
-  // Dynamically auto-adjust PDF layout, margins, and vertical paddings
   const pdfSpacing = {
     densityTier,
-    pageMarginTop: isHeavy ? 18 : densityTier === 'compact' ? 22 : densityTier === 'relaxed' ? 30 : 26,
-    pageMarginBottom: isHeavy ? 18 : densityTier === 'compact' ? 22 : densityTier === 'relaxed' ? 30 : 26,
-    pageMarginSide: isHeavy ? 22 : densityTier === 'compact' ? 24 : densityTier === 'relaxed' ? 30 : 28,
-    summaryLineStep: isHeavy ? 9.5 : densityTier === 'compact' ? 10.2 : densityTier === 'relaxed' ? 11.5 : 11,
-    summaryAfterGap: isHeavy ? 5 : densityTier === 'compact' ? 6.5 : densityTier === 'relaxed' ? 10 : 8,
-    companyAfterGap: isHeavy ? 7 : densityTier === 'compact' ? 8.5 : densityTier === 'relaxed' ? 12 : 10,
-    titleAfterGap: isHeavy ? 6 : densityTier === 'compact' ? 7.5 : densityTier === 'relaxed' ? 11 : 9,
-    bpLineStep: isHeavy ? 8.2 : densityTier === 'compact' ? 8.8 : densityTier === 'relaxed' ? 9.8 : 9.3,
-    bpAfterGap: isHeavy ? 1.0 : densityTier === 'compact' ? 1.5 : densityTier === 'relaxed' ? 2.5 : 2.0,
-    expAfterGap: isHeavy ? 3 : densityTier === 'compact' ? 4 : densityTier === 'relaxed' ? 7 : 5,
-    projNameAfterGap: isHeavy ? 7 : densityTier === 'compact' ? 8.5 : densityTier === 'relaxed' ? 12 : 10,
-    projTechAfterGap: isHeavy ? 6 : densityTier === 'compact' ? 7.5 : densityTier === 'relaxed' ? 11 : 9,
-    projDescLineStep: isHeavy ? 8.2 : densityTier === 'compact' ? 8.8 : densityTier === 'relaxed' ? 9.8 : 9.3,
-    projDescAfterGap: isHeavy ? 4 : densityTier === 'compact' ? 5 : densityTier === 'relaxed' ? 9 : 7,
-    skillLineStep: isHeavy ? 8.2 : densityTier === 'compact' ? 8.8 : densityTier === 'relaxed' ? 9.8 : 9.3,
-    skillAfterGap: isHeavy ? 5 : densityTier === 'compact' ? 7 : densityTier === 'relaxed' ? 11 : 9,
-    headingBefore: isHeavy ? 9 : densityTier === 'compact' ? 12 : densityTier === 'relaxed' ? 16 : 14,
-    headingAfter: isHeavy ? 2 : densityTier === 'compact' ? 3 : densityTier === 'relaxed' ? 4.5 : 3.5,
+    isHeavy,
+    isUltraHeavy,
+    isExtreme,
+    pageMarginTop: 26,
+    pageMarginBottom: 26,
+    pageMarginSide: 36,
+
+    nameFontSize: isExtreme ? 20 : isUltraHeavy ? 22 : isHeavy ? 24 : 28,
+    contactFontSize: isExtreme ? 7.8 : isUltraHeavy ? 8.2 : isHeavy ? 8.5 : 9.5,
+    headingFontSize: isExtreme ? 9.5 : isUltraHeavy ? 10.0 : isHeavy ? 10.8 : 12.0,
+    summaryFontSize: isExtreme ? 7.8 : isUltraHeavy ? 8.2 : isHeavy ? 8.8 : 10.0,
+    companyFontSize: isExtreme ? 8.2 : isUltraHeavy ? 8.8 : isHeavy ? 9.5 : 11.0,
+    titleFontSize: isExtreme ? 7.5 : isUltraHeavy ? 8.0 : isHeavy ? 8.5 : 10.0,
+    bodyFontSize: isExtreme ? 7.5 : isUltraHeavy ? 8.0 : isHeavy ? 8.5 : 9.8,
+    projectNameFontSize: isExtreme ? 8.2 : isUltraHeavy ? 8.8 : isHeavy ? 9.5 : 11.0,
+    projectTechFontSize: isExtreme ? 7.5 : isUltraHeavy ? 8.0 : isHeavy ? 8.5 : 10.0,
+    sidebarFontSize: isExtreme ? 7.5 : isUltraHeavy ? 8.0 : isHeavy ? 8.5 : 9.8,
+
+    summaryLineStep: isExtreme ? 8.5 : isUltraHeavy ? 9.0 : isHeavy ? 10.0 : densityTier === 'compact' ? 12.0 : 16.5,
+    summaryAfterGap: isExtreme ? 4.5 : isUltraHeavy ? 5.5 : isHeavy ? 7.0 : densityTier === 'compact' ? 9.0 : 20.0,
+    companyAfterGap: isExtreme ? 5.5 : isUltraHeavy ? 6.5 : isHeavy ? 7.5 : densityTier === 'compact' ? 9.5 : 14.0,
+    titleAfterGap: isExtreme ? 5.0 : isUltraHeavy ? 5.8 : isHeavy ? 6.8 : densityTier === 'compact' ? 8.0 : 12.0,
+    bpLineStep: isExtreme ? 7.4 : isUltraHeavy ? 7.8 : isHeavy ? 8.2 : densityTier === 'compact' ? 11.0 : 15.0,
+    bpAfterGap: isExtreme ? 1.0 : isUltraHeavy ? 1.2 : isHeavy ? 1.8 : densityTier === 'compact' ? 2.5 : 5.0,
+    expAfterGap: isExtreme ? 3.0 : isUltraHeavy ? 4.0 : isHeavy ? 5.0 : densityTier === 'compact' ? 7.5 : 20.0,
+    expItemGap: isExtreme ? 3.0 : isUltraHeavy ? 4.0 : isHeavy ? 5.0 : densityTier === 'compact' ? 7.5 : 20.0,
+    projNameAfterGap: isExtreme ? 5.5 : isUltraHeavy ? 6.5 : isHeavy ? 7.5 : densityTier === 'compact' ? 9.5 : 14.0,
+    projTechAfterGap: isExtreme ? 5.0 : isUltraHeavy ? 5.8 : isHeavy ? 6.8 : densityTier === 'compact' ? 8.0 : 12.0,
+    projDescLineStep: isExtreme ? 7.4 : isUltraHeavy ? 7.8 : isHeavy ? 8.2 : densityTier === 'compact' ? 11.0 : 15.0,
+    projDescAfterGap: isExtreme ? 3.5 : isUltraHeavy ? 4.5 : isHeavy ? 5.5 : densityTier === 'compact' ? 8.0 : 20.0,
+    projItemGap: isExtreme ? 3.5 : isUltraHeavy ? 4.5 : isHeavy ? 5.5 : densityTier === 'compact' ? 8.0 : 20.0,
+    eduLineStep: isExtreme ? 8.0 : isUltraHeavy ? 8.8 : isHeavy ? 9.8 : densityTier === 'compact' ? 11.0 : 14.5,
+    eduItemGap: isExtreme ? 2.5 : isUltraHeavy ? 3.5 : isHeavy ? 4.5 : densityTier === 'compact' ? 7.0 : 14.0,
+    skillLineStep: isExtreme ? 7.8 : isUltraHeavy ? 8.5 : isHeavy ? 9.5 : densityTier === 'compact' ? 11.0 : 14.5,
+    skillAfterGap: isExtreme ? 4.0 : isUltraHeavy ? 5.0 : isHeavy ? 6.0 : densityTier === 'compact' ? 8.0 : 14.0,
+    awardLineStep: isExtreme ? 8.0 : isUltraHeavy ? 8.8 : isHeavy ? 9.8 : densityTier === 'compact' ? 11.0 : 14.5,
+    certLineStep: isExtreme ? 8.0 : isUltraHeavy ? 8.8 : isHeavy ? 9.8 : densityTier === 'compact' ? 11.0 : 14.5,
+    headingBefore: isExtreme ? 7.0 : isUltraHeavy ? 9.0 : isHeavy ? 11.0 : densityTier === 'compact' ? 14.0 : 22.0,
+    headingAfter: isExtreme ? 7.5 : isUltraHeavy ? 8.5 : isHeavy ? 9.5 : densityTier === 'compact' ? 11.0 : 16.0,
   };
 
   // 6. HTML/CSS Twin Preview Spacing Metrics
@@ -421,7 +536,7 @@ export function buildTailoredDocxDocument({ profile, tailoredResult }) {
         new TextRun({
           text: text.toUpperCase(),
           bold: true,
-          size: 22, // 11pt
+          size: docxSpacing.headingFontSize || 22, // dynamic font-size scaling
           color: '2C3B57',
           font: 'Franklin Gothic Medium',
         }),
@@ -435,11 +550,11 @@ export function buildTailoredDocxDocument({ profile, tailoredResult }) {
   leftColumnChildren.push(createHeading('OBJECTIVE'));
   leftColumnChildren.push(
     new Paragraph({
-      spacing: { after: docxSpacing.summaryAfter, line: docxSpacing.bodyLineSpacing, lineRule: 'auto' },
+      spacing: { before: 80, after: docxSpacing.summaryAfter, line: docxSpacing.bodyLineSpacing, lineRule: 'auto' },
       children: [
         new TextRun({
           text: summary,
-          size: 19, // ~9.5pt
+          size: docxSpacing.summaryFontSize || 19, // dynamic font-size scaling
           color: '222222',
           font: 'Arial',
         }),
@@ -449,16 +564,16 @@ export function buildTailoredDocxDocument({ profile, tailoredResult }) {
 
   // 2. INTERNSHIPS
   leftColumnChildren.push(createHeading('INTERNSHIPS'));
-  experiences.forEach((exp) => {
-    // Company name
+  experiences.forEach((exp, expIdx) => {
+    // Company name with spacing under heading and between individual internships
     leftColumnChildren.push(
       new Paragraph({
-        spacing: { before: docxSpacing.companyBefore, after: docxSpacing.companyAfter },
+        spacing: { before: expIdx === 0 ? 80 : (docxSpacing.companyBefore + 120), after: docxSpacing.companyAfter },
         children: [
           new TextRun({
             text: exp.company || 'Internship Experience',
             bold: true,
-            size: 20, // 10pt
+            size: docxSpacing.companyFontSize || 20, // dynamic font-size scaling
             color: '2C3B57',
             font: 'Arial',
           }),
@@ -475,7 +590,7 @@ export function buildTailoredDocxDocument({ profile, tailoredResult }) {
           new TextRun({
             text: titlePeriod,
             bold: true,
-            size: 18, // 9pt
+            size: docxSpacing.titleFontSize || 18, // dynamic font-size scaling
             color: '111111',
             font: 'Arial',
           }),
@@ -492,7 +607,7 @@ export function buildTailoredDocxDocument({ profile, tailoredResult }) {
           children: [
             new TextRun({
               text: bp,
-              size: 18,
+              size: docxSpacing.bodyFontSize || 18, // dynamic font-size scaling
               color: '222222',
               font: 'Arial',
             }),
@@ -504,16 +619,16 @@ export function buildTailoredDocxDocument({ profile, tailoredResult }) {
 
   // 3. PROJECTS
   leftColumnChildren.push(createHeading('PROJECTS'));
-  projects.forEach((proj) => {
-    // Project Name
+  projects.forEach((proj, projIdx) => {
+    // Project Name with spacing under heading and between individual projects
     leftColumnChildren.push(
       new Paragraph({
-        spacing: { before: docxSpacing.projectNameBefore, after: docxSpacing.projectNameAfter },
+        spacing: { before: projIdx === 0 ? 80 : (docxSpacing.projectNameBefore + 120), after: docxSpacing.projectNameAfter },
         children: [
           new TextRun({
             text: proj.name || 'Project',
             bold: true,
-            size: 20,
+            size: docxSpacing.projectNameFontSize || 20, // dynamic font-size scaling
             color: '2C3B57',
             font: 'Arial',
           }),
@@ -535,7 +650,7 @@ export function buildTailoredDocxDocument({ profile, tailoredResult }) {
             new TextRun({
               text: techStackText,
               bold: true,
-              size: 18,
+              size: docxSpacing.projectTechFontSize || 18, // dynamic font-size scaling
               color: '111111',
               font: 'Arial',
             }),
@@ -552,7 +667,7 @@ export function buildTailoredDocxDocument({ profile, tailoredResult }) {
           children: [
             new TextRun({
               text: proj.description,
-              size: 18,
+              size: docxSpacing.bodyFontSize || 18, // dynamic font-size scaling
               color: '222222',
               font: 'Arial',
             }),
@@ -575,7 +690,7 @@ export function buildTailoredDocxDocument({ profile, tailoredResult }) {
           new TextRun({
             text: `${edu.degree}${edu.fieldOfStudy ? ` (${edu.fieldOfStudy})` : ''} | ${edu.graduationYear || ''}`,
             bold: true,
-            size: 18,
+            size: docxSpacing.sidebarFontSize || 18, // dynamic font-size scaling
             color: '111111',
             font: 'Arial',
           }),
@@ -588,7 +703,7 @@ export function buildTailoredDocxDocument({ profile, tailoredResult }) {
         children: [
           new TextRun({
             text: `${edu.institution}${edu.honors ? ` | ${edu.honors}` : ''}`,
-            size: 18,
+            size: docxSpacing.sidebarFontSize || 18, // dynamic font-size scaling
             color: '333333',
             font: 'Arial',
           }),
@@ -647,13 +762,13 @@ export function buildTailoredDocxDocument({ profile, tailoredResult }) {
           new TextRun({
             text: `${s.label}: `,
             bold: true,
-            size: 18,
+            size: docxSpacing.sidebarFontSize || 18, // dynamic font-size scaling
             color: '111111',
             font: 'Arial',
           }),
           new TextRun({
             text: s.items,
-            size: 18,
+            size: docxSpacing.sidebarFontSize || 18, // dynamic font-size scaling
             color: '222222',
             font: 'Arial',
           }),
@@ -673,7 +788,7 @@ export function buildTailoredDocxDocument({ profile, tailoredResult }) {
           children: [
             new TextRun({
               text: award,
-              size: 18,
+              size: docxSpacing.sidebarFontSize || 18, // dynamic font-size scaling
               color: '222222',
               font: 'Arial',
             }),
@@ -694,7 +809,7 @@ export function buildTailoredDocxDocument({ profile, tailoredResult }) {
           children: [
             new TextRun({
               text: `${cert.name} – ${cert.issuer}`,
-              size: 18,
+              size: docxSpacing.sidebarFontSize || 18, // dynamic font-size scaling
               color: '222222',
               font: 'Arial',
             }),
@@ -712,7 +827,7 @@ export function buildTailoredDocxDocument({ profile, tailoredResult }) {
 
   const contactRowRuns = [];
   if (phoneIconBinary) {
-    contactRowRuns.push(new ImageRun({ data: phoneIconBinary, transformation: { width: 9, height: 9 } }));
+    contactRowRuns.push(new ImageRun({ data: phoneIconBinary, transformation: { width: 9, height: 9 }, type: 'png' }));
     contactRowRuns.push(new TextRun({ text: ` ${phone}   `, size: 18, color: '2C3B57', font: 'Arial' }));
   } else {
     contactRowRuns.push(new TextRun({ text: `${phone}   `, size: 18, color: '2C3B57', font: 'Arial' }));
@@ -720,7 +835,7 @@ export function buildTailoredDocxDocument({ profile, tailoredResult }) {
   contactRowRuns.push(new TextRun({ text: '•   ', size: 18, color: '2C3B57', font: 'Arial' }));
 
   if (emailIconBinary) {
-    contactRowRuns.push(new ImageRun({ data: emailIconBinary, transformation: { width: 9, height: 9 } }));
+    contactRowRuns.push(new ImageRun({ data: emailIconBinary, transformation: { width: 9, height: 9 }, type: 'png' }));
     contactRowRuns.push(new TextRun({ text: ` ${email}   `, size: 18, color: '2C3B57', font: 'Arial' }));
   } else {
     contactRowRuns.push(new TextRun({ text: `${email}   `, size: 18, color: '2C3B57', font: 'Arial' }));
@@ -728,7 +843,7 @@ export function buildTailoredDocxDocument({ profile, tailoredResult }) {
   contactRowRuns.push(new TextRun({ text: '•   ', size: 18, color: '2C3B57', font: 'Arial' }));
 
   if (linkedinIconBinary) {
-    contactRowRuns.push(new ImageRun({ data: linkedinIconBinary, transformation: { width: 9, height: 9 } }));
+    contactRowRuns.push(new ImageRun({ data: linkedinIconBinary, transformation: { width: 9, height: 9 }, type: 'png' }));
     contactRowRuns.push(new TextRun({ text: ` ${linkedin}   `, size: 18, color: '2C3B57', font: 'Arial' }));
   } else {
     contactRowRuns.push(new TextRun({ text: `${linkedin}   `, size: 18, color: '2C3B57', font: 'Arial' }));
@@ -736,7 +851,7 @@ export function buildTailoredDocxDocument({ profile, tailoredResult }) {
   contactRowRuns.push(new TextRun({ text: '•   ', size: 18, color: '2C3B57', font: 'Arial' }));
 
   if (githubIconBinary) {
-    contactRowRuns.push(new ImageRun({ data: githubIconBinary, transformation: { width: 9, height: 9 } }));
+    contactRowRuns.push(new ImageRun({ data: githubIconBinary, transformation: { width: 9, height: 9 }, type: 'png' }));
     contactRowRuns.push(new TextRun({ text: ` ${github}`, size: 18, color: '2C3B57', font: 'Arial' }));
   } else {
     contactRowRuns.push(new TextRun({ text: `${github}`, size: 18, color: '2C3B57', font: 'Arial' }));
@@ -748,6 +863,10 @@ export function buildTailoredDocxDocument({ profile, tailoredResult }) {
       {
         properties: {
           page: {
+            size: {
+              width: 12240, // standard Letter width (8.5in) matching Master_Resume.docx
+              height: 15840, // standard Letter height (11.0in) matching Master_Resume.docx
+            },
             margin: {
               top: docxSpacing.pageMarginTop || 720,
               right: docxSpacing.pageMarginSide || 720,
@@ -765,7 +884,7 @@ export function buildTailoredDocxDocument({ profile, tailoredResult }) {
               new TextRun({
                 text: fullName.toUpperCase(),
                 bold: true,
-                size: 72, // 36pt matching Master_Resume.docx Heading1
+                size: docxSpacing.nameFontSize || 72, // dynamic font-size scaling
                 color: '2C3B57',
                 font: 'Franklin Gothic Medium',
               }),
@@ -891,6 +1010,8 @@ export async function generateTailoredDocxBuffer({ masterBuffer, profile, tailor
   }
 
   // 2. Internships (L&T and Infosys)
+  const szProp = docxSpacing.bodyFontSize && docxSpacing.bodyFontSize < 18 ? `<w:rPr><w:sz w:val="${docxSpacing.bodyFontSize}"/></w:rPr>` : '';
+
   if (experiences && experiences.length > 0) {
     // L&T
     if (experiences[0]?.bulletPoints?.length > 0) {
@@ -901,7 +1022,7 @@ export async function generateTailoredDocxBuffer({ masterBuffer, profile, tailor
         const newPs = experiences[0].bulletPoints
           .map(
             (bp) =>
-              `<w:p><w:pPr><w:pStyle w:val="Text"/><w:spacing w:after="${docxSpacing.bulletAfter}" w:line="${docxSpacing.bodyLineSpacing}" w:lineRule="auto"/><w:jc w:val="both"/></w:pPr><w:r><w:t>${escapeXml(bp)}</w:t></w:r></w:p>`
+              `<w:p><w:pPr><w:pStyle w:val="Text"/><w:spacing w:after="${docxSpacing.bulletAfter}" w:line="${docxSpacing.bodyLineSpacing}" w:lineRule="auto"/><w:jc w:val="both"/></w:pPr><w:r>${szProp}<w:t>${escapeXml(bp)}</w:t></w:r></w:p>`
           )
           .join('');
         docXml = docXml.substring(0, pStart) + newPs + docXml.substring(pEnd);
@@ -916,7 +1037,7 @@ export async function generateTailoredDocxBuffer({ masterBuffer, profile, tailor
         const newPs = experiences[1].bulletPoints
           .map(
             (bp) =>
-              `<w:p><w:pPr><w:pStyle w:val="Text"/><w:spacing w:after="${docxSpacing.bulletAfter}" w:line="${docxSpacing.bodyLineSpacing}" w:lineRule="auto"/><w:jc w:val="both"/></w:pPr><w:r><w:t>${escapeXml(bp)}</w:t></w:r></w:p>`
+              `<w:p><w:pPr><w:pStyle w:val="Text"/><w:spacing w:after="${docxSpacing.bulletAfter}" w:line="${docxSpacing.bodyLineSpacing}" w:lineRule="auto"/><w:jc w:val="both"/></w:pPr><w:r>${szProp}<w:t>${escapeXml(bp)}</w:t></w:r></w:p>`
           )
           .join('');
         docXml = docXml.substring(0, pStart) + newPs + docXml.substring(pEnd);
@@ -932,7 +1053,7 @@ export async function generateTailoredDocxBuffer({ masterBuffer, profile, tailor
       if (p1Idx !== -1) {
         const pStart = Math.max(docXml.lastIndexOf('<w:p ', p1Idx), docXml.lastIndexOf('<w:p>', p1Idx));
         const pEnd = docXml.indexOf('</w:p>', p1Idx) + 6;
-        const newP = `<w:p><w:pPr><w:pStyle w:val="Text"/><w:spacing w:after="${docxSpacing.projectDescAfter}" w:line="${docxSpacing.bodyLineSpacing}" w:lineRule="auto"/></w:pPr><w:r><w:t>${escapeXml(projects[0].description)}</w:t></w:r></w:p>`;
+        const newP = `<w:p><w:pPr><w:pStyle w:val="Text"/><w:spacing w:after="${docxSpacing.projectDescAfter}" w:line="${docxSpacing.bodyLineSpacing}" w:lineRule="auto"/></w:pPr><w:r>${szProp}<w:t>${escapeXml(projects[0].description)}</w:t></w:r></w:p>`;
         docXml = docXml.substring(0, pStart) + newP + docXml.substring(pEnd);
       }
     }
@@ -942,7 +1063,7 @@ export async function generateTailoredDocxBuffer({ masterBuffer, profile, tailor
       if (p2Idx !== -1) {
         const pStart = Math.max(docXml.lastIndexOf('<w:p ', p2Idx), docXml.lastIndexOf('<w:p>', p2Idx));
         const pEnd = docXml.indexOf('</w:p>', p2Idx) + 6;
-        const newP = `<w:p><w:pPr><w:pStyle w:val="Text"/><w:spacing w:after="${docxSpacing.projectDescAfter}" w:line="${docxSpacing.bodyLineSpacing}" w:lineRule="auto"/></w:pPr><w:r><w:t>${escapeXml(projects[1].description)}</w:t></w:r></w:p>`;
+        const newP = `<w:p><w:pPr><w:pStyle w:val="Text"/><w:spacing w:after="${docxSpacing.projectDescAfter}" w:line="${docxSpacing.bodyLineSpacing}" w:lineRule="auto"/></w:pPr><w:r>${szProp}<w:t>${escapeXml(projects[1].description)}</w:t></w:r></w:p>`;
         docXml = docXml.substring(0, pStart) + newP + docXml.substring(pEnd);
       }
     }
@@ -977,23 +1098,50 @@ export async function generateTailoredDocxBuffer({ masterBuffer, profile, tailor
     }
   }
 
-  // 5. Dynamic Page Margins and Fluid Autospacing (Strict 1-Page Enforcement without Text Collision or Clipping)
-  const pageMarginTopDxa = docxSpacing.pageMarginTop || 640;
-  const pageMarginBottomDxa = docxSpacing.pageMarginBottom || 640;
-  const pageMarginSideDxa = docxSpacing.pageMarginSide || 680;
+  // Strict Original Template Dimensions & Single-Page Fitting:
+  // Dynamically sets margins based on content density (guarantees single-page fit)
+  const isHeavyContent = (docxSpacing.bodyFontSize && docxSpacing.bodyFontSize < 18) || (experiences.reduce((acc, e) => acc + (e.bulletPoints?.length || 0), 0) > 4) || (approvedTech.length > 5);
+  const pageMarginTopDxa = isHeavyContent ? 450 : 540;
+  const pageMarginBottomDxa = isHeavyContent ? 300 : 360;
+  const pageMarginSideDxa = isHeavyContent ? 600 : 640;
   docXml = docXml.replace(
     /<w:pgMar\b[^>]*\/>/g,
     `<w:pgMar w:top="${pageMarginTopDxa}" w:right="${pageMarginSideDxa}" w:bottom="${pageMarginBottomDxa}" w:left="${pageMarginSideDxa}" w:header="709" w:footer="709" w:gutter="0"/>`
   );
 
+  // If candidate name font-size scaled down for heavier load, update in header row
+  if (docxSpacing.nameFontSize && docxSpacing.nameFontSize < 72) {
+    docXml = docXml.replace(/<w:sz w:val="72"\/>/g, `<w:sz w:val="${docxSpacing.nameFontSize}"/>`);
+    docXml = docXml.replace(/<w:szCs w:val="72"\/>/g, `<w:szCs w:val="${docxSpacing.nameFontSize}"/>`);
+  }
+
+  // Strip specifically empty trailing bullet paragraphs right before </w:tc>
+  // Only strips if the cell contains multiple paragraphs and non-empty content to preserve ECMA-376 schema compliance
+  docXml = docXml.replace(/<w:tc\b[^>]*>(?:(?!<\/w:tc>)[\s\S])*?<\/w:tc>/g, (cellXml) => {
+    const pMatches = cellXml.match(/<w:p\b/g);
+    if (!pMatches || pMatches.length <= 1) return cellXml;
+    if (!cellXml.includes('<w:r>') && !cellXml.includes('<w:r ')) return cellXml;
+    return cellXml.replace(/(?:<w:p\b[^>]*><w:pPr>(?:(?!<w:r[ >])[\s\S])*?<\/w:p>\s*)+(?=<\/w:tc>)/g, '');
+  });
+
+  // Compress trailing paragraph after table so Word NEVER pushes a blank paragraph onto Page 2
+  docXml = docXml.replace(
+    /<\/w:tbl>\s*<w:p\b(?:[^>]*\/>|[\s\S]*?<\/w:p>)/g,
+    '</w:tbl><w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="20" w:lineRule="exact"/><w:rPr><w:sz w:val="2"/><w:szCs w:val="2"/></w:rPr></w:pPr></w:p>'
+  );
+
   // Replace rigid 1-dxa exact heights on separator rows with fluid autospacing minimums
-  docXml = docXml.replace(/<w:trHeight\s+w:hRule="exact"\s+w:val="1"\s*\/>/g, '<w:trHeight w:hRule="atLeast" w:val="60"/>');
+  docXml = docXml.replace(/<w:trHeight\s+w:hRule="exact"\s+w:val="1"\s*\/>/g, '<w:trHeight w:hRule="atLeast" w:val="40"/>');
 
   // Convert oversized rigid row heights into fluid autospacing rows
-  docXml = docXml.replace(/<w:trHeight\s+w:val="(?:1684|1044|567|400)"\s*\/>/g, '<w:trHeight w:hRule="atLeast" w:val="120"/>');
+  docXml = docXml.replace(/<w:trHeight\s+(?:w:hRule="[^"]*"\s+)?w:val="(?:1684|1044|567|426|400|350|159|161)"\s*\/>/g, '<w:trHeight w:hRule="atLeast" w:val="40"/>');
 
   // Enforce table row-level integrity across all rows by adding <w:cantSplit/> to prevent awkward mid-row breaks
   docXml = docXml.replace(/<w:trPr>/g, '<w:trPr><w:cantSplit/>');
+
+  // Strip any manual page breaks or page break before tags
+  docXml = docXml.replace(/<w:br\s+w:type="page"\s*\/>/g, '');
+  docXml = docXml.replace(/<w:pageBreakBefore\s*\/>/g, '');
 
   zip.file('word/document.xml', docXml);
   return await zip.generateAsync({ type: 'arraybuffer' });
@@ -1058,14 +1206,24 @@ export async function exportTailoredDocx({
  * Helper to render technical skills with bold category label and wrapped regular items
  * without any text overlapping, collapsed leading, or off-margin spillover.
  */
-function renderPdfSkillCategory(doc, label, text, x, y, maxW, lineStep, afterGap = 0) {
+function renderPdfSkillCategory(
+  doc,
+  label,
+  text,
+  x,
+  y,
+  maxW,
+  lineStep,
+  afterGap = 0,
+  fontSize = 8
+) {
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(8);
-  const labelPrefix = `• ${label}: `;
+  doc.setFontSize(fontSize);
+  const labelPrefix = `${label}: `;
   const labelW = doc.getTextWidth(labelPrefix);
 
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8);
+  doc.setFontSize(fontSize);
 
   const words = text.split(/\s+/).filter(Boolean);
   let line1 = '';
@@ -1081,13 +1239,15 @@ function renderPdfSkillCategory(doc, label, text, x, y, maxW, lineStep, afterGap
     }
   }
 
-  // Draw bold bullet label
+  // Draw bold label (clean, without bullet)
   doc.setFont('helvetica', 'bold');
+  doc.setFontSize(fontSize);
   doc.setTextColor(17, 17, 17);
   doc.text(labelPrefix, x, y);
 
   // Draw first line of skills text beside the label
   doc.setFont('helvetica', 'normal');
+  doc.setFontSize(fontSize);
   doc.setTextColor(34, 34, 34);
   if (line1) {
     doc.text(line1, x + labelW, y);
@@ -1097,10 +1257,10 @@ function renderPdfSkillCategory(doc, label, text, x, y, maxW, lineStep, afterGap
   const remainingWords = words.slice(splitIdx);
   if (remainingWords.length > 0) {
     const remainingText = remainingWords.join(' ');
-    const extraLines = doc.splitTextToSize(remainingText, maxW - 8);
+    const extraLines = doc.splitTextToSize(remainingText, maxW - 4);
     for (let j = 0; j < extraLines.length; j++) {
       curY += lineStep;
-      doc.text(extraLines[j], x + 8, curY);
+      doc.text(extraLines[j], x + 4, curY);
     }
   }
 
@@ -1123,226 +1283,7 @@ export function generateTailoredPdfDocument({ profile, tailoredResult }) {
   const projects = tailoredResult?.highlightedProjects || profile?.projects || [];
   const approvedTech = tailoredResult?.approvedMissingTech || [];
 
-  // Dynamic Content Spacing & Overflow Control
-  const { pdfSpacing, densityTier } = computeDynamicContentSpacing({
-    summary,
-    experiences,
-    projects,
-    approvedTech,
-    profile,
-  });
-
-  const doc = new jsPDF({
-    orientation: 'portrait',
-    unit: 'pt',
-    format: 'letter', // 612 x 792 pt
-  });
-
-  const pageWidth = doc.internal.pageSize.getWidth();
-  const pageHeight = doc.internal.pageSize.getHeight();
-
-  const pageMarginTop = pdfSpacing?.pageMarginTop || 26;
-  const pageMarginBottom = pdfSpacing?.pageMarginBottom || 26;
-  const pageMarginSide = pdfSpacing?.pageMarginSide || 28;
-
-  const leftColX = pageMarginSide;
-  const leftColW = Math.floor((pageWidth - pageMarginSide * 2 - 14) * 0.625);
-  const rightColX = leftColX + leftColW + 12;
-  const rightColW = pageWidth - rightColX - pageMarginSide;
-
-  // 1. Candidate Full Name (Centered & Uppercase in #2C3B57 navy)
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(22);
-  doc.setTextColor(44, 59, 87); // #2C3B57 in RGB
-  const fullName = (profile?.personalInfo?.fullName || 'jaya sri palli').toUpperCase();
-  const nameWidth = doc.getTextWidth(fullName);
-  doc.text(fullName, Math.max(pageMarginSide, (pageWidth - nameWidth) / 2), pageMarginTop + 16);
-
-  // 2. Contact Information Row with Embedded Contact Icons
-  const phone = profile?.personalInfo?.phone || '+91- 7893414784';
-  const email = profile?.personalInfo?.email || 'jayasripalli20@gmail.com';
-  const linkedin = profile?.personalInfo?.linkedin || 'linkedin.com/in/jayasripalli';
-  const github = profile?.personalInfo?.github || 'github.com/Jayasri7-ux';
-
-  const contactItems = [
-    { text: phone, icon: getContactIconDataUrl('phone') },
-    { text: email, icon: getContactIconDataUrl('email') },
-    { text: linkedin, icon: getContactIconDataUrl('linkedin') },
-    { text: github, icon: getContactIconDataUrl('github') },
-  ];
-
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8.5);
-  doc.setTextColor(44, 59, 87);
-
-  const iconDim = 7.5;
-  const iconGap = 2.5;
-  const dotGap = 6;
-  const dotWidth = doc.getTextWidth('•');
-
-  let totalRowWidth = 0;
-  const itemMetrics = contactItems.map((ci) => {
-    const textW = doc.getTextWidth(ci.text);
-    const itemW = (ci.icon ? iconDim + iconGap : 0) + textW;
-    totalRowWidth += itemW;
-    return { textW, itemW };
-  });
-  totalRowWidth += (contactItems.length - 1) * (dotGap * 2 + dotWidth);
-
-  let curX = Math.max(pageMarginSide, (pageWidth - totalRowWidth) / 2);
-  const contactY = pageMarginTop + 33;
-
-  contactItems.forEach((ci, idx) => {
-    if (ci.icon) {
-      try {
-        doc.addImage(ci.icon, 'PNG', curX, contactY - iconDim + 1.2, iconDim, iconDim);
-      } catch (err) {
-        // Fallback gracefully if image cannot be parsed
-      }
-      curX += iconDim + iconGap;
-    }
-    doc.text(ci.text, curX, contactY);
-    curX += itemMetrics[idx].textW;
-
-    if (idx < contactItems.length - 1) {
-      curX += dotGap;
-      doc.text('•', curX, contactY);
-      curX += dotWidth + dotGap;
-    }
-  });
-
-  // Section heading helper
-  const drawHeading = (title, x, y, width) => {
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(10.5);
-    doc.setTextColor(44, 59, 87);
-    doc.text(title.toUpperCase(), x, y);
-    doc.setDrawColor(44, 59, 87);
-    doc.setLineWidth(1);
-    doc.line(x, y + 3, x + width, y + 3);
-    return y + (pdfSpacing?.headingAfter || 13);
-  };
-
-  // Background shading for right column (#CADEE5)
-  const rightBgTop = pageMarginTop + 44;
-  const rightBgHeight = pageHeight - pageMarginBottom - rightBgTop;
-  doc.setFillColor(202, 222, 229); // #CADEE5 in RGB
-  doc.rect(rightColX - 6, rightBgTop, rightColW + 12, rightBgHeight, 'F');
-
-  // --- Left Column ---
-  let leftY = pageMarginTop + 56;
-
-  // 1. OBJECTIVE
-  leftY = drawHeading('OBJECTIVE', leftColX, leftY, leftColW);
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8.5);
-  doc.setTextColor(34, 34, 34);
-  const summaryLines = doc.splitTextToSize(summary, leftColW);
-  summaryLines.forEach((line) => {
-    doc.text(line, leftColX, leftY);
-    leftY += pdfSpacing.summaryLineStep;
-  });
-  leftY += pdfSpacing.summaryAfterGap;
-
-  // 2. INTERNSHIPS
-  leftY = drawHeading('INTERNSHIPS', leftColX, leftY, leftColW);
-  experiences.forEach((exp) => {
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(9);
-    doc.setTextColor(44, 59, 87);
-    doc.text(exp.company || 'Internship Experience', leftColX, leftY);
-    leftY += pdfSpacing.companyAfterGap;
-
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(8);
-    doc.setTextColor(17, 17, 17);
-    const titlePeriod = `${exp.title || 'Intern'} | ${exp.period || `${exp.startDate || ''} – ${exp.endDate || ''}`}`;
-    doc.text(titlePeriod, leftColX, leftY);
-    leftY += pdfSpacing.titleAfterGap;
-
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(8);
-    doc.setTextColor(34, 34, 34);
-    (exp.bulletPoints || []).forEach((bp) => {
-      const bpLines = doc.splitTextToSize(`• ${bp}`, leftColW - 6);
-      bpLines.forEach((line) => {
-        doc.text(line, leftColX + 4, leftY);
-        leftY += pdfSpacing.bpLineStep;
-      });
-      leftY += pdfSpacing.bpAfterGap;
-    });
-    leftY += pdfSpacing.expAfterGap;
-  });
-
-  // 3. PROJECTS
-  leftY = drawHeading('PROJECTS', leftColX, leftY, leftColW);
-  projects.forEach((proj) => {
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(9);
-    doc.setTextColor(44, 59, 87);
-    doc.text(proj.name || 'Project', leftColX, leftY);
-    leftY += pdfSpacing.projNameAfterGap;
-
-    const techStack = Array.isArray(proj.techStack) ? proj.techStack.join(' | ') : proj.techStack || '';
-    if (techStack) {
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(8);
-      doc.setTextColor(17, 17, 17);
-      const techLines = doc.splitTextToSize(`Tech: ${techStack}`, leftColW);
-      techLines.forEach((line) => {
-        doc.text(line, leftColX, leftY);
-        leftY += 9.5;
-      });
-      leftY += pdfSpacing.projTechAfterGap;
-    }
-
-    if (proj.description) {
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(8);
-      doc.setTextColor(34, 34, 34);
-      const descLines = doc.splitTextToSize(proj.description, leftColW);
-      descLines.forEach((line) => {
-        doc.text(line, leftColX, leftY);
-        leftY += pdfSpacing.projDescLineStep;
-      });
-      leftY += pdfSpacing.projDescAfterGap;
-    }
-  });
-
-  // --- Right Column (#CADEE5 background) ---
-  let rightY = pageMarginTop + 56;
-
-  // 1. Education
-  rightY = drawHeading('Education', rightColX, rightY, rightColW);
-  (profile?.education || []).forEach((edu) => {
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(8);
-    doc.setTextColor(17, 17, 17);
-    const degreeLines = doc.splitTextToSize(
-      `${edu.degree}${edu.fieldOfStudy ? ` (${edu.fieldOfStudy})` : ''} | ${edu.graduationYear || ''}`,
-      rightColW - 4
-    );
-    degreeLines.forEach((line) => {
-      doc.text(line, rightColX, rightY);
-      rightY += 9.5;
-    });
-
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(8);
-    doc.setTextColor(51, 51, 51);
-    const instLines = doc.splitTextToSize(
-      `${edu.institution}${edu.honors ? ` | ${edu.honors}` : ''}`,
-      rightColW - 4
-    );
-    instLines.forEach((line) => {
-      doc.text(line, rightColX, rightY);
-      rightY += 9.5;
-    });
-    rightY += pdfSpacing.companyAfterGap;
-  });
-
-  // 2. Technical Skills
-  rightY = drawHeading('TECHNICAL SKILLS', rightColX, rightY, rightColW);
+  // Categorize approved skills upfront for measurement and rendering
   const categorized = categorizeApprovedSkills(approvedTech, profile?.coreTechnicalSkills);
   const skills = [
     {
@@ -1382,47 +1323,531 @@ export function generateTailoredPdfDocument({ profile, tailoredResult }) {
     },
   ];
 
+  // Dynamic Content Spacing & Overflow Control
+  const { pdfSpacing, densityTier } = computeDynamicContentSpacing({
+    summary,
+    experiences,
+    projects,
+    approvedTech,
+    profile,
+  });
+
+  const doc = new jsPDF({
+    orientation: 'portrait',
+    unit: 'pt',
+    format: 'letter', // 612 x 792 pt
+  });
+
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+
+  const pageMarginTop = pdfSpacing?.pageMarginTop || 26;
+  const pageMarginBottom = pdfSpacing?.pageMarginBottom || 26;
+  const pageMarginSide = pdfSpacing?.pageMarginSide || 36;
+
+  const gutter = 14;
+  const usableWidth = pageWidth - pageMarginSide * 2;
+  const leftColX = pageMarginSide;
+  const leftColW = Math.floor((usableWidth - gutter) * 0.625);
+  const rightColX = leftColX + leftColW + gutter;
+  const rightColW = pageWidth - pageMarginSide - rightColX;
+
+  const nameY = pageMarginTop + 16;
+  const contactY = pageMarginTop + 33;
+  const dividerY = contactY + 9;
+  const columnsStartY = dividerY + 18;
+  const maxAvailableY = pageHeight - pageMarginBottom;
+
+  // Sidebar padding
+  const sidebarPad = 8;
+  const sidebarTextX = rightColX + sidebarPad;
+  const sidebarTextW = rightColW - sidebarPad * 2;
+
+  // Measurement function
+  const measureHeight = (sp) => {
+    let lY = columnsStartY;
+    // Objective
+    lY += (sp.headingAfter || 9);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(sp.summaryFontSize || 9.2);
+    const sLines = doc.splitTextToSize(summary, leftColW);
+    lY += sLines.length * (sp.summaryLineStep || 12.5) + (sp.summaryAfterGap || 10);
+
+    // Internships
+    lY += (sp.headingBefore || 14) + (sp.headingAfter || 9);
+    experiences.forEach((exp, idx) => {
+      lY += (sp.companyAfterGap || 9);
+      lY += (sp.titleAfterGap || 7.5);
+      doc.setFontSize(sp.bodyFontSize || 8.8);
+      (exp.bulletPoints || []).forEach((bp) => {
+        const bpLines = doc.splitTextToSize(bp, leftColW - 12);
+        lY += bpLines.length * (sp.bpLineStep || 11.5) + (sp.bpAfterGap || 2.5);
+      });
+      if (idx < experiences.length - 1) {
+        lY += (sp.expItemGap || sp.expAfterGap || 14);
+      }
+    });
+
+    // Projects
+    lY += (sp.headingBefore || 14) + (sp.headingAfter || 9);
+    projects.forEach((proj, idx) => {
+      lY += (sp.projNameAfterGap || 9);
+      const techStack = Array.isArray(proj.techStack) ? proj.techStack.join(' | ') : proj.techStack || '';
+      if (techStack) {
+        doc.setFontSize(sp.projectTechFontSize || 9.0);
+        const tLines = doc.splitTextToSize(`Tech: ${techStack}`, leftColW);
+        lY += tLines.length * (sp.projectTechLineStep || 10.5) + (sp.projTechAfterGap || 7.5);
+      }
+      if (proj.description) {
+        doc.setFontSize(sp.bodyFontSize || 8.8);
+        const dLines = doc.splitTextToSize(proj.description, leftColW);
+        lY += dLines.length * (sp.projDescLineStep || 11.5);
+      }
+      if (idx < projects.length - 1) {
+        lY += (sp.projItemGap || sp.projDescAfterGap || 14);
+      }
+    });
+
+    // Right column
+    let rY = columnsStartY;
+    // Education
+    rY += (sp.headingAfter || 9);
+    (profile?.education || []).forEach((edu, idx) => {
+      doc.setFontSize(sp.sidebarFontSize || 8.8);
+      const dField = edu.fieldOfStudy === 'Information Technology' ? 'IT' : (edu.fieldOfStudy || '');
+      const dTitle = `${edu.degree}${dField ? ` (${dField})` : ''} | ${edu.graduationYear || ''}`;
+      const dLines = doc.splitTextToSize(dTitle, sidebarTextW);
+      rY += dLines.length * (sp.eduLineStep || 11);
+      const iLines = doc.splitTextToSize(
+        `${edu.institution}${edu.honors ? ` | ${edu.honors}` : ''}`,
+        sidebarTextW
+      );
+      rY += iLines.length * (sp.eduLineStep || 11);
+      if (idx < (profile?.education || []).length - 1) {
+        rY += (sp.eduItemGap || 9);
+      }
+    });
+
+    // Skills
+    rY += (sp.headingBefore || 14) + (sp.headingAfter || 9);
+    skills.forEach((s) => {
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(sp.sidebarFontSize || 8.8);
+      const labelPrefix = `${s.label}: `;
+      const labelW = doc.getTextWidth(labelPrefix);
+      doc.setFont('helvetica', 'normal');
+      const words = s.text.split(/\s+/).filter(Boolean);
+      let line1 = '';
+      let splitIdx = 0;
+      for (let i = 0; i < words.length; i++) {
+        const candidate = line1 ? `${line1} ${words[i]}` : words[i];
+        if (doc.getTextWidth(candidate) <= sidebarTextW - labelW) {
+          line1 = candidate;
+          splitIdx = i + 1;
+        } else {
+          break;
+        }
+      }
+      let cY = rY;
+      const remainingWords = words.slice(splitIdx);
+      if (remainingWords.length > 0) {
+        const extraLines = doc.splitTextToSize(remainingWords.join(' '), sidebarTextW - 4);
+        cY += extraLines.length * (sp.skillLineStep || 11);
+      }
+      rY = cY + (sp.skillLineStep || 11) + (sp.skillAfterGap || 7);
+    });
+
+    // Awards
+    if (profile?.awards && profile.awards.length > 0) {
+      rY += (sp.headingBefore || 14) + (sp.headingAfter || 9);
+      profile.awards.forEach((award) => {
+        doc.setFontSize(sp.sidebarFontSize || 8.8);
+        const aLines = doc.splitTextToSize(award, sidebarTextW - 10);
+        rY += aLines.length * (sp.awardLineStep || 11) + 2;
+      });
+      rY += (sp.expAfterGap || 6);
+    }
+
+    // Certifications
+    if (profile?.certifications && profile.certifications.length > 0) {
+      rY += (sp.headingBefore || 14) + (sp.headingAfter || 9);
+      profile.certifications.forEach((cert) => {
+        doc.setFontSize(sp.sidebarFontSize || 8.8);
+        const cText = `${cert.name} - ${cert.issuer}`;
+        const cLines = doc.splitTextToSize(cText, sidebarTextW - 10);
+        rY += cLines.length * (sp.certLineStep || 11) + 2;
+      });
+    }
+
+    return Math.max(lY, rY);
+  };
+
+  // Base Spacing with clean balanced proportions mirroring the website layout
+  let baseSpacing = {
+    ...pdfSpacing,
+    nameFontSize: pdfSpacing.nameFontSize || 26,
+    contactFontSize: pdfSpacing.contactFontSize || 8.5,
+    headingFontSize: pdfSpacing.headingFontSize || 11,
+    summaryFontSize: pdfSpacing.summaryFontSize || 9.2,
+    companyFontSize: pdfSpacing.companyFontSize || 10.2,
+    titleFontSize: pdfSpacing.titleFontSize || 9.2,
+    bodyFontSize: pdfSpacing.bodyFontSize || 8.8,
+    projectNameFontSize: pdfSpacing.projectNameFontSize || 10.2,
+    projectTechFontSize: pdfSpacing.projectTechFontSize || 9.0,
+    sidebarFontSize: pdfSpacing.sidebarFontSize || 8.8,
+
+    summaryLineStep: pdfSpacing.summaryLineStep || 12.5,
+    summaryAfterGap: pdfSpacing.summaryAfterGap || 10,
+    companyAfterGap: pdfSpacing.companyAfterGap || 9,
+    titleAfterGap: pdfSpacing.titleAfterGap || 7.5,
+    bpLineStep: pdfSpacing.bpLineStep || 11.5,
+    bpAfterGap: pdfSpacing.bpAfterGap || 2.5,
+    expAfterGap: pdfSpacing.expAfterGap || 14,
+    expItemGap: pdfSpacing.expItemGap || 14,
+    projNameAfterGap: pdfSpacing.projNameAfterGap || 9,
+    projTechAfterGap: pdfSpacing.projTechAfterGap || 7.5,
+    projDescLineStep: pdfSpacing.projDescLineStep || 11.5,
+    projDescAfterGap: pdfSpacing.projDescAfterGap || 14,
+    projItemGap: pdfSpacing.projItemGap || 14,
+    eduLineStep: pdfSpacing.eduLineStep || 11,
+    eduItemGap: pdfSpacing.eduItemGap || 9,
+    skillLineStep: pdfSpacing.skillLineStep || 11,
+    skillAfterGap: pdfSpacing.skillAfterGap || 7,
+    awardLineStep: pdfSpacing.awardLineStep || 11,
+    certLineStep: pdfSpacing.certLineStep || 11,
+    headingBefore: pdfSpacing.headingBefore || 14,
+    headingAfter: pdfSpacing.headingAfter || 9,
+  };
+
+  let activePdfSpacing = { ...baseSpacing };
+  let initialRequiredY = measureHeight(activePdfSpacing);
+
+  // If content overflows single-page boundary, scale proportionally
+  if (initialRequiredY > maxAvailableY) {
+    const availableHeight = maxAvailableY - columnsStartY;
+    const neededHeight = initialRequiredY - columnsStartY;
+    const autoFitScale = Math.max(0.82, Math.min(1.0, (availableHeight - 4) / neededHeight));
+
+    activePdfSpacing = {
+      ...activePdfSpacing,
+      autoFitScale,
+      nameFontSize: Math.max(18, Math.round(activePdfSpacing.nameFontSize * autoFitScale * 10) / 10),
+      contactFontSize: Math.max(7.5, Math.round(activePdfSpacing.contactFontSize * autoFitScale * 10) / 10),
+      headingFontSize: Math.max(9.0, Math.round(activePdfSpacing.headingFontSize * autoFitScale * 10) / 10),
+      summaryFontSize: Math.max(7.5, Math.round(activePdfSpacing.summaryFontSize * autoFitScale * 10) / 10),
+      companyFontSize: Math.max(7.8, Math.round(activePdfSpacing.companyFontSize * autoFitScale * 10) / 10),
+      titleFontSize: Math.max(7.2, Math.round(activePdfSpacing.titleFontSize * autoFitScale * 10) / 10),
+      bodyFontSize: Math.max(7.2, Math.round(activePdfSpacing.bodyFontSize * autoFitScale * 10) / 10),
+      projectNameFontSize: Math.max(7.8, Math.round(activePdfSpacing.projectNameFontSize * autoFitScale * 10) / 10),
+      projectTechFontSize: Math.max(7.2, Math.round(activePdfSpacing.projectTechFontSize * autoFitScale * 10) / 10),
+      sidebarFontSize: Math.max(7.2, Math.round(activePdfSpacing.sidebarFontSize * autoFitScale * 10) / 10),
+
+      summaryLineStep: Math.max(8.5, Math.round(activePdfSpacing.summaryLineStep * autoFitScale * 10) / 10),
+      summaryAfterGap: Math.max(4.0, Math.round(activePdfSpacing.summaryAfterGap * autoFitScale * 10) / 10),
+      companyAfterGap: Math.max(5.0, Math.round(activePdfSpacing.companyAfterGap * autoFitScale * 10) / 10),
+      titleAfterGap: Math.max(4.5, Math.round(activePdfSpacing.titleAfterGap * autoFitScale * 10) / 10),
+      bpLineStep: Math.max(7.4, Math.round(activePdfSpacing.bpLineStep * autoFitScale * 10) / 10),
+      bpAfterGap: Math.max(0.8, Math.round(activePdfSpacing.bpAfterGap * autoFitScale * 10) / 10),
+      expAfterGap: Math.max(3.0, Math.round(activePdfSpacing.expAfterGap * autoFitScale * 10) / 10),
+      expItemGap: Math.max(3.0, Math.round(activePdfSpacing.expItemGap * autoFitScale * 10) / 10),
+      projNameAfterGap: Math.max(5.0, Math.round(activePdfSpacing.projNameAfterGap * autoFitScale * 10) / 10),
+      projTechAfterGap: Math.max(4.5, Math.round(activePdfSpacing.projTechAfterGap * autoFitScale * 10) / 10),
+      projDescLineStep: Math.max(7.4, Math.round(activePdfSpacing.projDescLineStep * autoFitScale * 10) / 10),
+      projDescAfterGap: Math.max(3.5, Math.round(activePdfSpacing.projDescAfterGap * autoFitScale * 10) / 10),
+      projItemGap: Math.max(3.5, Math.round(activePdfSpacing.projItemGap * autoFitScale * 10) / 10),
+      eduLineStep: Math.max(7.8, Math.round(activePdfSpacing.eduLineStep * autoFitScale * 10) / 10),
+      eduItemGap: Math.max(4.0, Math.round(activePdfSpacing.eduItemGap * autoFitScale * 10) / 10),
+      skillLineStep: Math.max(7.4, Math.round(activePdfSpacing.skillLineStep * autoFitScale * 10) / 10),
+      skillAfterGap: Math.max(4.0, Math.round(activePdfSpacing.skillAfterGap * autoFitScale * 10) / 10),
+      awardLineStep: Math.max(7.8, Math.round(activePdfSpacing.awardLineStep * autoFitScale * 10) / 10),
+      certLineStep: Math.max(7.8, Math.round(activePdfSpacing.certLineStep * autoFitScale * 10) / 10),
+      headingBefore: Math.max(5.0, Math.round(activePdfSpacing.headingBefore * autoFitScale * 10) / 10),
+      headingAfter: Math.max(5.0, Math.round(activePdfSpacing.headingAfter * autoFitScale * 10) / 10),
+    };
+  } else if (initialRequiredY < maxAvailableY - 80 && !pdfSpacing.isHeavy && !pdfSpacing.isUltraHeavy && !pdfSpacing.isExtreme) {
+    // Content is light or standard: distribute extra space gracefully
+    const extraSpace = Math.min(120, maxAvailableY - 40 - initialRequiredY);
+    const expandFactor = Math.min(1.3, 1 + extraSpace / 350);
+
+    activePdfSpacing = {
+      ...activePdfSpacing,
+      summaryLineStep: Math.round(activePdfSpacing.summaryLineStep * Math.min(1.15, expandFactor) * 10) / 10,
+      bpLineStep: Math.round(activePdfSpacing.bpLineStep * Math.min(1.15, expandFactor) * 10) / 10,
+      projDescLineStep: Math.round(activePdfSpacing.projDescLineStep * Math.min(1.15, expandFactor) * 10) / 10,
+      summaryAfterGap: Math.round(activePdfSpacing.summaryAfterGap * expandFactor * 10) / 10,
+      expAfterGap: Math.round(activePdfSpacing.expAfterGap * expandFactor * 10) / 10,
+      expItemGap: Math.round(activePdfSpacing.expItemGap * expandFactor * 10) / 10,
+      projDescAfterGap: Math.round(activePdfSpacing.projDescAfterGap * expandFactor * 10) / 10,
+      projItemGap: Math.round(activePdfSpacing.projItemGap * expandFactor * 10) / 10,
+      eduItemGap: Math.round(activePdfSpacing.eduItemGap * expandFactor * 10) / 10,
+      skillAfterGap: Math.round(activePdfSpacing.skillAfterGap * expandFactor * 10) / 10,
+      headingBefore: Math.round(activePdfSpacing.headingBefore * expandFactor * 10) / 10,
+    };
+  }
+
+  // 1. Candidate Full Name (Centered & Uppercase in #2C3B57 navy)
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(activePdfSpacing.nameFontSize || 26);
+  doc.setTextColor(44, 59, 87); // #2C3B57 in RGB
+  const fullName = (profile?.personalInfo?.fullName || 'jaya sri palli').toUpperCase();
+  const nameWidth = doc.getTextWidth(fullName);
+  doc.text(fullName, Math.max(pageMarginSide, (pageWidth - nameWidth) / 2), nameY);
+
+  // 2. Contact Information Row with Embedded Contact Icons (Clean URLs, NO https://)
+  const phone = profile?.personalInfo?.phone || '+91- 7893414784';
+  const email = profile?.personalInfo?.email || 'jayasripalli20@gmail.com';
+  const rawLinkedin = profile?.personalInfo?.linkedin || 'linkedin.com/in/jayasripalli';
+  const rawGithub = profile?.personalInfo?.github || 'github.com/Jayasri7-ux';
+  const linkedin = rawLinkedin.replace(/^https?:\/\/(www\.)?/i, '');
+  const github = rawGithub.replace(/^https?:\/\/(www\.)?/i, '');
+
+  const contactItems = [
+    { text: phone, icon: getContactIconDataUrl('phone') },
+    { text: email, icon: getContactIconDataUrl('email') },
+    { text: linkedin, icon: getContactIconDataUrl('linkedin') },
+    { text: github, icon: getContactIconDataUrl('github') },
+  ];
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(activePdfSpacing.contactFontSize || 8.5);
+  doc.setTextColor(44, 59, 87);
+
+  const iconDim = 7.5;
+  const iconGap = 3.0;
+  const itemGap = 16;
+
+  let totalRowWidth = 0;
+  const itemMetrics = contactItems.map((ci) => {
+    const textW = doc.getTextWidth(ci.text);
+    const itemW = (ci.icon ? iconDim + iconGap : 0) + textW;
+    totalRowWidth += itemW;
+    return { textW, itemW };
+  });
+  totalRowWidth += (contactItems.length - 1) * itemGap;
+
+  let curX = Math.max(pageMarginSide, (pageWidth - totalRowWidth) / 2);
+
+  contactItems.forEach((ci, idx) => {
+    if (ci.icon) {
+      try {
+        doc.addImage(ci.icon, 'PNG', curX, contactY - iconDim + 1.2, iconDim, iconDim);
+      } catch (err) {
+        // Fallback gracefully if image cannot be parsed
+      }
+      curX += iconDim + iconGap;
+    }
+    doc.text(ci.text, curX, contactY);
+    curX += itemMetrics[idx].textW;
+
+    if (idx < contactItems.length - 1) {
+      curX += itemGap;
+    }
+  });
+
+  // Header Divider Line below contact row (#CADEE5 / #CBD5E1)
+  doc.setDrawColor(202, 222, 229); // #CADEE5 in RGB
+  doc.setLineWidth(0.85);
+  doc.line(pageMarginSide, dividerY, pageWidth - pageMarginSide, dividerY);
+
+  // Background shading for right column (#CADEE5)
+  // Extends cleanly from top of column to maxAvailableY (bottom of page layout)
+  const rightBgTop = dividerY;
+  const rightBgHeight = maxAvailableY - rightBgTop;
+  doc.setFillColor(202, 222, 229); // #CADEE5 in RGB
+  doc.rect(rightColX, rightBgTop, rightColW, rightBgHeight, 'F');
+
+  // Section Heading Helper: guarantees clean line separation and zero heading collision
+  const drawHeading = (title, x, y, width) => {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(activePdfSpacing.headingFontSize || 11);
+    doc.setTextColor(44, 59, 87);
+    doc.text(title.toUpperCase(), x, y);
+    doc.setDrawColor(44, 59, 87);
+    doc.setLineWidth(1.2);
+    doc.line(x, y + 2.5, x + width, y + 2.5);
+    return y + 2.5 + (activePdfSpacing?.headingAfter || 9);
+  };
+
+  // Bullet Drawer Helper: vector circle for 100% crisp, uncorrupted bullets
+  const drawVectorBullet = (bx, by, color = [44, 59, 87], radius = 1.2) => {
+    doc.setFillColor(color[0], color[1], color[2]);
+    doc.circle(bx, by - 2.5, radius, 'F');
+  };
+
+  // --- Left Column ---
+  let leftY = columnsStartY;
+
+  // 1. OBJECTIVE
+  leftY = drawHeading('OBJECTIVE', leftColX, leftY, leftColW);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(activePdfSpacing.summaryFontSize || 9.2);
+  doc.setTextColor(34, 34, 34);
+  const summaryLines = doc.splitTextToSize(summary, leftColW);
+  summaryLines.forEach((line) => {
+    doc.text(line, leftColX, leftY);
+    leftY += activePdfSpacing.summaryLineStep;
+  });
+  leftY += activePdfSpacing.summaryAfterGap;
+
+  // 2. INTERNSHIPS
+  leftY += activePdfSpacing.headingBefore;
+  leftY = drawHeading('INTERNSHIPS', leftColX, leftY, leftColW);
+  experiences.forEach((exp, idx) => {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(activePdfSpacing.companyFontSize || 10.2);
+    doc.setTextColor(44, 59, 87);
+    doc.text(exp.company || 'Internship Experience', leftColX, leftY);
+    leftY += activePdfSpacing.companyAfterGap;
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(activePdfSpacing.titleFontSize || 9.2);
+    doc.setTextColor(17, 17, 17);
+    const titlePeriod = `${exp.title || 'Intern'} | ${exp.period || `${exp.startDate || ''} - ${exp.endDate || ''}`}`;
+    doc.text(titlePeriod, leftColX, leftY);
+    leftY += activePdfSpacing.titleAfterGap;
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(activePdfSpacing.bodyFontSize || 8.8);
+    doc.setTextColor(34, 34, 34);
+    (exp.bulletPoints || []).forEach((bp) => {
+      const bpLines = doc.splitTextToSize(bp, leftColW - 12);
+      drawVectorBullet(leftColX + 3, leftY, [44, 59, 87], 1.2);
+      bpLines.forEach((line) => {
+        doc.text(line, leftColX + 10, leftY);
+        leftY += activePdfSpacing.bpLineStep;
+      });
+      leftY += activePdfSpacing.bpAfterGap;
+    });
+    // Space in between individual internships
+    if (idx < experiences.length - 1) {
+      leftY += (activePdfSpacing.expItemGap || activePdfSpacing.expAfterGap || 14);
+    }
+  });
+
+  // 3. PROJECTS
+  leftY += activePdfSpacing.headingBefore;
+  leftY = drawHeading('PROJECTS', leftColX, leftY, leftColW);
+  projects.forEach((proj, idx) => {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(activePdfSpacing.projectNameFontSize || 10.2);
+    doc.setTextColor(44, 59, 87);
+    doc.text(proj.name || 'Project', leftColX, leftY);
+    leftY += activePdfSpacing.projNameAfterGap;
+
+    const techStack = Array.isArray(proj.techStack) ? proj.techStack.join(' | ') : proj.techStack || '';
+    if (techStack) {
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(activePdfSpacing.projectTechFontSize || 9.0);
+      doc.setTextColor(17, 17, 17);
+      const techLines = doc.splitTextToSize(`Tech: ${techStack}`, leftColW);
+      techLines.forEach((line) => {
+        doc.text(line, leftColX, leftY);
+        leftY += (activePdfSpacing.projectTechLineStep || 10.5);
+      });
+      leftY += activePdfSpacing.projTechAfterGap;
+    }
+
+    if (proj.description) {
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(activePdfSpacing.bodyFontSize || 8.8);
+      doc.setTextColor(34, 34, 34);
+      const descLines = doc.splitTextToSize(proj.description, leftColW);
+      descLines.forEach((line) => {
+        doc.text(line, leftColX, leftY);
+        leftY += activePdfSpacing.projDescLineStep;
+      });
+    }
+    // Space in between individual projects
+    if (idx < projects.length - 1) {
+      leftY += (activePdfSpacing.projItemGap || activePdfSpacing.projDescAfterGap || 14);
+    }
+  });
+
+  // --- Right Column (#CADEE5 background) ---
+  let rightY = columnsStartY;
+
+  // 1. Education
+  rightY = drawHeading('Education', sidebarTextX, rightY, sidebarTextW);
+  (profile?.education || []).forEach((edu, idx) => {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(activePdfSpacing.sidebarFontSize || 8.8);
+    doc.setTextColor(17, 17, 17);
+    const dField = edu.fieldOfStudy === 'Information Technology' ? 'IT' : (edu.fieldOfStudy || '');
+    const dTitle = `${edu.degree}${dField ? ` (${dField})` : ''} | ${edu.graduationYear || ''}`;
+    const degreeLines = doc.splitTextToSize(dTitle, sidebarTextW);
+    degreeLines.forEach((line) => {
+      doc.text(line, sidebarTextX, rightY);
+      rightY += (activePdfSpacing.eduLineStep || 11);
+    });
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(activePdfSpacing.sidebarFontSize || 8.8);
+    doc.setTextColor(51, 51, 51);
+    const instLines = doc.splitTextToSize(
+      `${edu.institution}${edu.honors ? ` | ${edu.honors}` : ''}`,
+      sidebarTextW
+    );
+    instLines.forEach((line) => {
+      doc.text(line, sidebarTextX, rightY);
+      rightY += (activePdfSpacing.eduLineStep || 11);
+    });
+    // Space in between individual education items
+    if (idx < (profile?.education || []).length - 1) {
+      rightY += (activePdfSpacing.eduItemGap || 9);
+    }
+  });
+
+  // 2. Technical Skills (Clean bold categories, NO bullets)
+  rightY += activePdfSpacing.headingBefore;
+  rightY = drawHeading('TECHNICAL SKILLS', sidebarTextX, rightY, sidebarTextW);
+
   skills.forEach((s) => {
     rightY = renderPdfSkillCategory(
       doc,
       s.label,
       s.text,
-      rightColX,
+      sidebarTextX,
       rightY,
-      rightColW - 4,
-      pdfSpacing.skillLineStep,
-      pdfSpacing.skillAfterGap
+      sidebarTextW,
+      activePdfSpacing.skillLineStep || 11,
+      activePdfSpacing.skillAfterGap || 7,
+      activePdfSpacing.sidebarFontSize || 8.8
     );
   });
 
   // 3. Awards
   if (profile?.awards && profile.awards.length > 0) {
-    rightY = drawHeading('AWARDS', rightColX, rightY, rightColW);
+    rightY += activePdfSpacing.headingBefore;
+    rightY = drawHeading('AWARDS', sidebarTextX, rightY, sidebarTextW);
     profile.awards.forEach((award) => {
       doc.setFont('helvetica', 'normal');
-      doc.setFontSize(8);
+      doc.setFontSize(activePdfSpacing.sidebarFontSize || 8.8);
       doc.setTextColor(34, 34, 34);
-      const awardLines = doc.splitTextToSize(`• ${award}`, rightColW - 4);
+      const awardLines = doc.splitTextToSize(award, sidebarTextW - 10);
+      drawVectorBullet(sidebarTextX + 2, rightY, [44, 59, 87], 1.2);
       awardLines.forEach((line) => {
-        doc.text(line, rightColX, rightY);
-        rightY += 9.5;
+        doc.text(line, sidebarTextX + 9, rightY);
+        rightY += (activePdfSpacing.awardLineStep || 11);
       });
       rightY += 2;
     });
-    rightY += pdfSpacing.expAfterGap;
+    rightY += activePdfSpacing.expAfterGap;
   }
 
   // 4. Certifications
   if (profile?.certifications && profile.certifications.length > 0) {
-    rightY = drawHeading('CERTIFICATIONS', rightColX, rightY, rightColW);
+    rightY += activePdfSpacing.headingBefore;
+    rightY = drawHeading('CERTIFICATIONS', sidebarTextX, rightY, sidebarTextW);
     profile.certifications.forEach((cert) => {
       doc.setFont('helvetica', 'normal');
-      doc.setFontSize(8);
+      doc.setFontSize(activePdfSpacing.sidebarFontSize || 8.8);
       doc.setTextColor(34, 34, 34);
-      const certLines = doc.splitTextToSize(`• ${cert.name} – ${cert.issuer}`, rightColW - 4);
+      const cText = `${cert.name} - ${cert.issuer}`;
+      const certLines = doc.splitTextToSize(cText, sidebarTextW - 10);
+      drawVectorBullet(sidebarTextX + 2, rightY, [44, 59, 87], 1.2);
       certLines.forEach((line) => {
-        doc.text(line, rightColX, rightY);
-        rightY += 9.5;
+        doc.text(line, sidebarTextX + 9, rightY);
+        rightY += (activePdfSpacing.certLineStep || 11);
       });
       rightY += 2;
     });
