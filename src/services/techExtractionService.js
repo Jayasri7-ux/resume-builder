@@ -1144,6 +1144,7 @@ Return ONLY a valid JSON object matching this schema. Do NOT use markdown code f
  * @param {Object} params.masterProfile - Candidate Master Profile
  * @param {string} [params.model=DEFAULT_MODEL] - Ollama model name
  * @param {string} [params.baseUrl=OLLAMA_BASE_URL] - Ollama server endpoint
+ * @param {number} [params.timeoutMs=300000] - 300s timeout budget for local CPU LLM extraction
  * @returns {Promise<Object>} Complete Tech X-Ray data object
  */
 export async function runTechExtractionPipeline({
@@ -1151,7 +1152,7 @@ export async function runTechExtractionPipeline({
   masterProfile,
   model = DEFAULT_MODEL,
   baseUrl = OLLAMA_BASE_URL,
-  timeoutMs = 15000,
+  timeoutMs = 300000,
 }) {
   const cleanJd = typeof stripConversationalArtifacts === 'function'
     ? stripConversationalArtifacts(sanitizedJd)

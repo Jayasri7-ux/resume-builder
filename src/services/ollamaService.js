@@ -6,7 +6,7 @@
  */
 
 export const OLLAMA_BASE_URL = 'http://localhost:11434';
-export const DEFAULT_MODEL = 'mistral';
+export const DEFAULT_MODEL = 'llama3.2:latest';
 
 /**
  * Constructs an AI prompt strictly delimited with XML tags:
@@ -298,7 +298,7 @@ export const DEFAULT_OLLAMA_OPTIONS = {
  * @param {string} [params.systemPrompt] - Optional system prompt
  * @param {string} [params.customPrompt] - Optional full prompt override (will still be sent with format: 'json')
  * @param {Object} [params.options] - Ollama generation options (temperature, num_predict, etc.)
- * @param {number} [params.timeoutMs=15000] - Timeout in milliseconds (default: 15000ms)
+ * @param {number} [params.timeoutMs=300000] - Timeout in milliseconds (default: 300000ms / 5 minutes for CPU inference)
  * @returns {Promise<{success: boolean, data?: Object, raw?: string, model?: string, durationMs?: number, error?: string}>}
  */
 export async function generateResumeContent({
@@ -310,7 +310,7 @@ export async function generateResumeContent({
   systemPrompt = 'You are an expert AI resume builder. You always respond in valid JSON matching the requested schema.',
   customPrompt = null,
   options = DEFAULT_OLLAMA_OPTIONS,
-  timeoutMs = 15000,
+  timeoutMs = 300000,
 } = {}) {
   try {
     const prompt = customPrompt || buildXmlPrompt({ userJd, userInput, instructions });

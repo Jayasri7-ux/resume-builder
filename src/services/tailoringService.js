@@ -265,7 +265,7 @@ export async function tailorResumePipeline({
   model = DEFAULT_MODEL,
   baseUrl = OLLAMA_BASE_URL,
   options = { temperature: 0.3, num_predict: 1024 },
-  timeoutMs = 25000,
+  timeoutMs = 300000,
 }) {
   if (!jobDescription || !jobDescription.trim()) {
     throw new Error('Please provide a target job description to tailor the resume.');
@@ -295,7 +295,7 @@ export async function tailorResumePipeline({
 
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs); // 25s timeout for local LLM
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs); // 120s timeout budget for local LLM
 
     try {
       const response = await fetch(`${cleanBaseUrl}/api/generate`, {

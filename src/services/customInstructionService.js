@@ -479,7 +479,7 @@ export async function applyCustomInstructionPipeline({
   approvedMissingTech = [],
   model = DEFAULT_MODEL,
   baseUrl = OLLAMA_BASE_URL,
-  timeoutMs = 15000,
+  timeoutMs = 1800,
 } = {}) {
   const cleanBaseUrl = (baseUrl || OLLAMA_BASE_URL).replace(/\/+$/, '');
   const startTime = Date.now();

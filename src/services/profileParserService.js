@@ -147,9 +147,10 @@ export async function extractTextFromFile(file) {
  *
  * @param {Object} params
  * @param {string} params.rawResumeText - The resume text to be parsed
- * @param {string} [params.model=DEFAULT_MODEL] - Ollama model (e.g. 'mistral', 'llama3')
+ * @param {string} [params.model=DEFAULT_MODEL] - Ollama model (e.g. 'llama3.2:latest', 'mistral')
  * @param {string} [params.baseUrl=OLLAMA_BASE_URL] - Ollama server endpoint
  * @param {Object} [params.options] - Ollama generation options
+ * @param {number} [params.timeoutMs=300000] - 300s (5-minute) timeout budget for local CPU LLM inference
  * @returns {Promise<{success: boolean, profile?: Object, raw?: string, error?: string}>}
  */
 export async function parseResumeWithOllama({
@@ -157,7 +158,7 @@ export async function parseResumeWithOllama({
   model = DEFAULT_MODEL,
   baseUrl = OLLAMA_BASE_URL,
   options = { temperature: 0.1, num_predict: 2048 },
-  timeoutMs = 30000,
+  timeoutMs = 300000,
 }) {
   if (!rawResumeText || !rawResumeText.trim()) {
     return { success: false, error: 'Resume text is empty. Please provide resume content to parse.' };
@@ -265,7 +266,7 @@ export async function parseResumeWithOllama({
   } catch (error) {
     let message = error.message;
     if (error.name === 'AbortError') {
-      message = `Resume parsing timed out after ${timeoutMs / 1000}s on ${baseUrl}.`;
+      message = `Resume parsing timed out after ${timeoutMs / 1000}s on ${baseUrl}. Local LLMs may require more time on initial startup or complex resumes; ensure your Ollama instance is responsive or try a lighter model.`;
     } else if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
       message = `Cannot reach Ollama at ${baseUrl}. Ensure Ollama is running ('ollama serve') and CORS allows browser requests ($env:OLLAMA_ORIGINS="*").`;
     }

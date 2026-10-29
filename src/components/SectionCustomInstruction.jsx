@@ -54,7 +54,7 @@ export default function SectionCustomInstruction({
         instruction: trimmed,
         approvedMissingTech,
         model,
-        timeoutMs: 15000,
+        timeoutMs: 90000,
       });
 
       if (response.blocked) {

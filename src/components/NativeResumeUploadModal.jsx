@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   X,
   Upload,
@@ -10,11 +10,12 @@ import {
   ShieldCheck,
   FileCode,
   Copy,
+  Clock,
 } from 'lucide-react';
 import { ingestOriginalDocument } from '../services/documentExtractor';
 import { parseResumeWithOllama, buildProfileParsingPrompt } from '../services/profileParserService';
 import { auditFactIntegrity } from '../services/factFirewall';
-import { OLLAMA_BASE_URL, DEFAULT_MODEL } from '../services/ollamaService';
+import { OLLAMA_BASE_URL, DEFAULT_MODEL, checkOllamaConnection } from '../services/ollamaService';
 
 const SAMPLE_RESUME_TEXT = `Jaya Sri Palli
 Full Stack Developer
@@ -68,12 +69,54 @@ export default function NativeResumeUploadModal({
   const [activeTab, setActiveTab] = useState('file'); // 'file' | 'text'
   const [selectedFile, setSelectedFile] = useState(null);
   const [rawText, setRawText] = useState('');
+  const [internalModels, setInternalModels] = useState([]);
+  const effectiveModels = availableModels.length > 0 ? availableModels : internalModels;
+
   const [selectedModel, setSelectedModel] = useState(
-    availableModels.length > 0 ? availableModels[0].name : DEFAULT_MODEL
+    effectiveModels.length > 0 ? effectiveModels[0].name : DEFAULT_MODEL
   );
   const [isProcessing, setIsProcessing] = useState(false);
   const [status, setStatus] = useState(null); // { type: 'success' | 'error' | 'info', message: string }
   const [showPromptPreview, setShowPromptPreview] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [processingStage, setProcessingStage] = useState('');
+
+  // Auto-detect installed Ollama models upon modal open if not provided by parent
+  useEffect(() => {
+    let ignore = false;
+    if (isOpen && availableModels.length === 0) {
+      checkOllamaConnection(baseUrl)
+        .then((res) => {
+          if (!ignore && res.success && res.models && res.models.length > 0) {
+            setInternalModels(res.models);
+            setSelectedModel((prev) => {
+              const has = res.models.some((m) => m.name === prev);
+              return has ? prev : res.models[0].name;
+            });
+          }
+        })
+        .catch(() => {});
+    }
+    return () => {
+      ignore = true;
+    };
+  }, [isOpen, baseUrl, availableModels.length]);
+
+  // Active timer for clear local LLM processing feedback
+  useEffect(() => {
+    let timer = null;
+    if (isProcessing) {
+      setElapsedSeconds(0);
+      timer = setInterval(() => {
+        setElapsedSeconds((prev) => prev + 1);
+      }, 1000);
+    } else {
+      setElapsedSeconds(0);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [isProcessing]);
 
   if (!isOpen) return null;
 
@@ -120,11 +163,13 @@ export default function NativeResumeUploadModal({
 
     setIsProcessing(true);
     setStatus(null);
+    setProcessingStage('Reading document and preparing <user_input> XML prompt...');
 
     try {
       // 1. Prepare Document for Visual Preview
       let docObj = null;
       if (selectedFile) {
+        setProcessingStage(`Extracting native text from ${selectedFile.name}...`);
         docObj = await ingestOriginalDocument(selectedFile);
       } else {
         const blob = new Blob([rawText], { type: 'text/plain;charset=utf-8' });
@@ -138,16 +183,21 @@ export default function NativeResumeUploadModal({
         };
       }
 
-      // 2. Parse via Ollama with XML Delimiters and format: "json"
+      setProcessingStage(`Querying Ollama (${selectedModel}) at ${baseUrl} to parse and structure resume JSON (300s CPU budget)...`);
+
+      // 2. Parse via Ollama with XML Delimiters and format: "json" (timeout extended to 300s for CPU inference)
       const parseResult = await parseResumeWithOllama({
         rawResumeText: rawText || docObj.text,
         model: selectedModel,
         baseUrl,
+        timeoutMs: 300000,
       });
 
       if (!parseResult.success || !parseResult.profile) {
         throw new Error(parseResult.error || 'Failed to parse resume with Ollama.');
       }
+
+      setProcessingStage('Auditing extracted profile against Immutable Fact Firewall...');
 
       // 3. Run Immutable Fact Firewall Audit
       const auditResult = auditFactIntegrity({
@@ -156,6 +206,7 @@ export default function NativeResumeUploadModal({
       });
 
       setIsProcessing(false);
+      setProcessingStage('');
       setStatus({
         type: 'success',
         message: `Success! Extracted Master Profile with ${parseResult.profile.eligibleJobRoles?.primaryRoles?.length || 0} primary roles. Fact Firewall: ${auditResult.integrityScore}% verified.`,
@@ -169,6 +220,7 @@ export default function NativeResumeUploadModal({
       });
     } catch (err) {
       setIsProcessing(false);
+      setProcessingStage('');
       setStatus({
         type: 'error',
         message: err.message,
@@ -305,13 +357,13 @@ export default function NativeResumeUploadModal({
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
             <div className="flex items-center gap-2">
               <span className="text-xs text-slate-400 whitespace-nowrap">Ollama Model:</span>
-              {availableModels.length > 0 ? (
+              {effectiveModels.length > 0 ? (
                 <select
                   value={selectedModel}
                   onChange={(e) => setSelectedModel(e.target.value)}
                   className="bg-slate-950 border border-slate-700 text-white text-xs rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 >
-                  {availableModels.map((m) => (
+                  {effectiveModels.map((m) => (
                     <option key={m.name} value={m.name}>
                       {m.name}
                     </option>
@@ -322,8 +374,8 @@ export default function NativeResumeUploadModal({
                   type="text"
                   value={selectedModel}
                   onChange={(e) => setSelectedModel(e.target.value)}
-                  placeholder="e.g. mistral"
-                  className="bg-slate-950 border border-slate-700 text-white text-xs rounded-lg px-2.5 py-1.5 font-mono w-28 focus:outline-none"
+                  placeholder="e.g. llama3.2:latest"
+                  className="bg-slate-950 border border-slate-700 text-white text-xs rounded-lg px-2.5 py-1.5 font-mono w-36 focus:outline-none"
                 />
               )}
             </div>
@@ -344,18 +396,77 @@ export default function NativeResumeUploadModal({
               >
                 {isProcessing ? (
                   <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    AI Fact Firewall Parsing...
+                    <Loader2 className="w-4 h-4 animate-spin text-amber-300" />
+                    <span>Parsing with Ollama ({elapsedSeconds}s)...</span>
                   </>
                 ) : (
                   <>
                     <Sparkles className="w-4 h-4 text-amber-300" />
-                    Parse &amp; Render Side-by-Side
+                    <span>Parse &amp; Render Side-by-Side</span>
                   </>
                 )}
               </button>
             </div>
           </div>
+
+          {/* Active Local LLM Processing Feedback Panel */}
+          {isProcessing && (
+            <div className="p-4 rounded-xl bg-gradient-to-r from-indigo-950/70 via-slate-900 to-indigo-950/70 border border-indigo-500/40 shadow-xl space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-start gap-3">
+                  <div className="p-2.5 rounded-xl bg-indigo-500/20 border border-indigo-500/30 text-indigo-400 mt-0.5 shrink-0">
+                    <Loader2 className="w-5 h-5 animate-spin text-indigo-400" />
+                  </div>
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h4 className="text-sm font-semibold text-white">
+                        Local LLM is Parsing Your Resume
+                      </h4>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-indigo-500/25 text-indigo-300 border border-indigo-500/40 flex items-center gap-1">
+                        <Clock className="w-3 h-3 text-indigo-400" />
+                        <span>Elapsed: {elapsedSeconds}s</span>
+                      </span>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-slate-800 text-slate-300 border border-slate-700">
+                        Timeout: 300s (5m CPU budget)
+                      </span>
+                    </div>
+                    <p className="text-xs text-indigo-200/90 font-medium">
+                      {processingStage || `Extracting and structuring resume XML/JSON data via Ollama (${selectedModel})...`}
+                    </p>
+                    <p className="text-[11px] text-slate-400 leading-relaxed">
+                      Initial local LLM warmup and token structuring on CPU can take 2–3 minutes. Please keep this modal open while your local CPU/GPU finishes inference.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="hidden sm:flex flex-col items-end text-[10px] font-mono text-slate-400 shrink-0">
+                  <span className="text-emerald-400 flex items-center gap-1 font-semibold">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping inline-block" />
+                    Ollama Active
+                  </span>
+                  <span className="text-slate-500 mt-0.5">{selectedModel}</span>
+                </div>
+              </div>
+
+              {/* Step progression indicators */}
+              <div className="bg-slate-950/80 rounded-lg p-2.5 border border-slate-800/80 text-[11px] text-slate-300 space-y-1.5">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <div className="flex items-center gap-1.5 text-emerald-400">
+                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">1. Ingest File &amp; Build XML</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 text-amber-300">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0 text-amber-400" />
+                    <span className="truncate">2. Local LLM Structuring</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 text-slate-500">
+                    <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">3. Fact Firewall Audit</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* XML Prompt Accordion */}
           {showPromptPreview && (

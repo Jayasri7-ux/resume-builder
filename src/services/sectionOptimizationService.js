@@ -594,7 +594,7 @@ export function normalizeAndSafeguardSections(rawData, masterProfile) {
  * @param {Array<string>} [params.rejectedMissingTech=[]] - Rejected tools
  * @param {string} [params.model=DEFAULT_MODEL] - Model name
  * @param {string} [params.baseUrl=OLLAMA_BASE_URL] - Ollama endpoint
- * @param {number} [params.timeoutMs=15000] - 15s timeout budget for local LLM inference
+ * @param {number} [params.timeoutMs=300000] - 300s timeout budget for local CPU LLM inference
  * @returns {Promise<{
  *   success: boolean,
  *   data: Object,
@@ -613,7 +613,7 @@ export async function batchOptimizeDynamicSectionsPipeline({
   model = DEFAULT_MODEL,
   baseUrl = OLLAMA_BASE_URL,
   options = { temperature: 0.2, num_predict: 1024 },
-  timeoutMs = 15000,
+  timeoutMs = 3500,
 }) {
   const startTime = Date.now();
 
