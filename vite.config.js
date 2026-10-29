@@ -7,6 +7,7 @@ import {
   isKnownNonJobUrl,
   isJobDescriptionContent,
   isBotProtectionResponse,
+  cleanJinaContent,
   INVALID_JOB_URL_ERROR,
 } from './src/services/jobUrlScraperService.js'
 
@@ -78,6 +79,34 @@ function jobScraperPlugin() {
       clearTimeout(timeout);
 
       if (!response.ok) {
+        // Attempt Jina AI reader fallback before failing
+        try {
+          const jinaRes = await fetch(`https://r.jina.ai/${targetUrl}`, {
+            headers: { 'Accept': 'text/plain, text/markdown' },
+            signal: AbortSignal.timeout(8000),
+          });
+          if (jinaRes.ok) {
+            const jinaRaw = await jinaRes.text();
+            const cleaned = cleanJinaContent(jinaRaw);
+            const meta = { title: cleaned.title, company: null };
+            if (cleaned.text && isJobDescriptionContent(cleaned.text, meta, targetUrl)) {
+              const wordCount = cleaned.text.split(/\s+/).filter(Boolean).length;
+              res.statusCode = 200;
+              res.end(JSON.stringify({
+                success: true,
+                text: cleaned.text,
+                title: cleaned.title,
+                company: null,
+                location: null,
+                wordCount,
+                charCount: cleaned.text.length,
+                source: 'dev_jina_fallback',
+              }));
+              return;
+            }
+          }
+        } catch {}
+
         res.statusCode = 200;
         let botOrRedirectMessage = `Target server responded with HTTP status ${response.status} (${response.statusText}). Please paste the job description text directly.`;
         if (response.status === 403 || response.status === 401) {
@@ -115,6 +144,33 @@ function jobScraperPlugin() {
 
       // Check for bot verification challenge screens (Cloudflare Turnstile, CAPTCHA, Incapsula)
       if (isBotProtectionResponse(rawHtml)) {
+        try {
+          const jinaRes = await fetch(`https://r.jina.ai/${targetUrl}`, {
+            headers: { 'Accept': 'text/plain, text/markdown' },
+            signal: AbortSignal.timeout(8000),
+          });
+          if (jinaRes.ok) {
+            const jinaRaw = await jinaRes.text();
+            const cleaned = cleanJinaContent(jinaRaw);
+            const meta = { title: cleaned.title, company: null };
+            if (cleaned.text && isJobDescriptionContent(cleaned.text, meta, targetUrl)) {
+              const wordCount = cleaned.text.split(/\s+/).filter(Boolean).length;
+              res.statusCode = 200;
+              res.end(JSON.stringify({
+                success: true,
+                text: cleaned.text,
+                title: cleaned.title,
+                company: null,
+                location: null,
+                wordCount,
+                charCount: cleaned.text.length,
+                source: 'dev_jina_bot_fallback',
+              }));
+              return;
+            }
+          }
+        } catch {}
+
         res.statusCode = 200;
         res.end(JSON.stringify({
           success: false,

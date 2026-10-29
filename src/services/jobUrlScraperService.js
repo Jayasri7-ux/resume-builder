@@ -567,8 +567,52 @@ export function isBotProtectionResponse(html, status = 200) {
 }
 
 /**
+ * Cleans markdown/text returned by Jina AI Reader (https://r.jina.ai/).
+ * Extracts Title metadata, removes navigation headers, links, and markdown images.
+ *
+ * @param {string} rawMarkdown - Markdown text from Jina AI Reader
+ * @returns {{ text: string, title: string | null }}
+ */
+export function cleanJinaContent(rawMarkdown) {
+  if (!rawMarkdown || typeof rawMarkdown !== 'string') {
+    return { text: '', title: null };
+  }
+
+  // Extract title if present in Jina header (e.g. "Title: Software Engineer - Google")
+  const titleMatch = rawMarkdown.match(/^Title:\s*(.+)$/m);
+  let title = titleMatch ? titleMatch[1].trim() : null;
+
+  let text = rawMarkdown
+    .replace(/^Title:.*$/m, '')
+    .replace(/^URL Source:.*$/m, '')
+    .replace(/^Markdown Content:\s*/m, '')
+    // Remove markdown image embeds: ![alt](url)
+    .replace(/!\[.*?\]\(.*?\)/g, '')
+    // Convert markdown hyperlinks [text](url) -> text
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    // Remove markdown header indicators (###) but retain header text
+    .replace(/^#{1,6}\s+/gm, '')
+    // Normalize markdown bold/italic tags
+    .replace(/\*{1,2}([^*]+)\*{1,2}/g, '$1')
+    // Strip excessive blank lines
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  // If title has common job suffixes (e.g. " - TechCorp Careers", " | LinkedIn"), clean them
+  if (title) {
+    title = title
+      .replace(/\s*[-–—|•]\s*(?:.*?\s+)?(?:careers?|jobs?|lever|greenhouse|workday|linkedin|indeed|glassdoor|ashby|smartrecruiters|jobvite).*$/i, '')
+      .replace(/\s*[-–—|•]\s*[A-Z0-9\s&,.-]+(?:\s+inc\.?|\s+ltd\.?|\s+llc\.?|\s+corp\.?)$/i, '')
+      .trim();
+  }
+
+  return { text, title };
+}
+
+/**
  * Scrapes and extracts a clean Job Description from a given direct URL.
- * Works across server-side Node.js (via Vite proxy/middleware) and client environments.
+ * Works across server-side Node.js (via Vite proxy/middleware / Vercel Serverless Function)
+ * and client environments with multi-tier failover (Server API -> Jina AI Reader -> CORS Proxies).
  *
  * @param {string} url - Target job URL
  * @param {Object} [options={}] - Extraction options
@@ -588,7 +632,6 @@ export function isBotProtectionResponse(html, status = 200) {
  */
 export async function scrapeJobUrl(url, options = {}) {
   const {
-    timeoutMs = 15000,
     apiEndpoint = '/api/scrape-job-url',
   } = options;
 
@@ -609,11 +652,14 @@ export async function scrapeJobUrl(url, options = {}) {
     };
   }
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
-  // Step 1: Try local backend scraping endpoint (Node.js server with zero CORS restrictions)
+  // -------------------------------------------------------------------------
+  // STAGE 1: Server-Side API Endpoint (/api/scrape-job-url)
+  // Operates without browser CORS (Vite middleware in dev, Vercel Serverless Function in prod)
+  // -------------------------------------------------------------------------
   try {
+    const apiController = new AbortController();
+    const apiTimeout = setTimeout(() => apiController.abort(), 9000);
+
     const apiResponse = await fetch(apiEndpoint, {
       method: 'POST',
       headers: {
@@ -621,36 +667,42 @@ export async function scrapeJobUrl(url, options = {}) {
         'Accept': 'application/json',
       },
       body: JSON.stringify({ url }),
-      signal: controller.signal,
+      signal: apiController.signal,
     });
+    clearTimeout(apiTimeout);
 
-    if (apiResponse.ok) {
-      clearTimeout(timeoutId);
+    const contentType = apiResponse.headers.get('content-type') || '';
+    if (apiResponse.ok && contentType.includes('application/json')) {
       const data = await apiResponse.json();
       if (data.success && data.text) {
-        // Validate that extracted content is a genuine Job Description
         const meta = { title: data.title, company: data.company };
-        if (!isJobDescriptionContent(data.text, meta, url)) {
+        if (isJobDescriptionContent(data.text, meta, url)) {
+          const wordCount = data.wordCount || data.text.split(/\s+/).filter(Boolean).length;
+          return {
+            success: true,
+            text: data.text,
+            title: data.title || null,
+            company: data.company || null,
+            location: data.location || null,
+            url,
+            wordCount,
+            charCount: data.text.length,
+            source: data.source || 'server_api',
+          };
+        } else {
           return {
             success: false,
             url,
             error: INVALID_JOB_URL_ERROR,
           };
         }
-
-        const wordCount = data.text.split(/\s+/).filter(Boolean).length;
+      } else if (data.error === INVALID_JOB_URL_ERROR) {
         return {
-          success: true,
-          text: data.text,
-          title: data.title || null,
-          company: data.company || null,
-          location: data.location || null,
+          success: false,
           url,
-          wordCount,
-          charCount: data.text.length,
-          source: 'backend_api',
+          error: INVALID_JOB_URL_ERROR,
         };
-      } else if (data.error) {
+      } else if (data.isLoginRedirect) {
         return {
           success: false,
           url,
@@ -658,132 +710,102 @@ export async function scrapeJobUrl(url, options = {}) {
         };
       }
     }
-  } catch (err) {
-    // If backend endpoint is not reached (e.g. static preview or direct test), fall through to direct fetch
-    if (err.name === 'AbortError') {
-      clearTimeout(timeoutId);
-      return {
-        success: false,
-        url,
-        error: 'Job URL extraction timed out after 15 seconds. Please paste the job description text directly.',
-      };
-    }
+  } catch {
+    // API endpoint unreachable, timed out, or returned HTML (e.g. static host preview)
   }
 
-  // Step 2: Fallback to direct fetch with custom User-Agent
+  // -------------------------------------------------------------------------
+  // STAGE 2: Jina AI Reader Engine (CORS-enabled, handles dynamic JS & Cloudflare)
+  // -------------------------------------------------------------------------
   try {
-    const fetchController = new AbortController();
-    const fetchTimeout = setTimeout(() => fetchController.abort(), 10000);
+    const jinaController = new AbortController();
+    const jinaTimeout = setTimeout(() => jinaController.abort(), 9000);
 
-    let rawHtml = '';
+    const jinaResponse = await fetch(`https://r.jina.ai/${url}`, {
+      headers: {
+        'Accept': 'text/plain, text/markdown',
+      },
+      signal: jinaController.signal,
+    });
+    clearTimeout(jinaTimeout);
+
+    if (jinaResponse.ok) {
+      const jinaRaw = await jinaResponse.text();
+      const cleaned = cleanJinaContent(jinaRaw);
+      const meta = { title: cleaned.title, company: null };
+
+      if (cleaned.text && isJobDescriptionContent(cleaned.text, meta, url)) {
+        const wordCount = cleaned.text.split(/\s+/).filter(Boolean).length;
+        return {
+          success: true,
+          text: cleaned.text,
+          title: cleaned.title,
+          company: null,
+          location: null,
+          url,
+          wordCount,
+          charCount: cleaned.text.length,
+          source: 'jina_reader',
+        };
+      }
+    }
+  } catch {
+    // Jina reader unreachable; proceed to Stage 3
+  }
+
+  // -------------------------------------------------------------------------
+  // STAGE 3: Multi-CORS Proxy Fallbacks (corsproxy.io, allorigins, codetabs)
+  // -------------------------------------------------------------------------
+  const proxyBuilders = [
+    (target) => `https://corsproxy.io/?url=${encodeURIComponent(target)}`,
+    (target) => `https://corsproxy.io/?${encodeURIComponent(target)}`,
+    (target) => `https://api.allorigins.win/raw?url=${encodeURIComponent(target)}`,
+    (target) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(target)}`,
+  ];
+
+  for (const buildProxyUrl of proxyBuilders) {
     try {
-      const directResponse = await fetch(url, {
-        headers: {
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        },
-        signal: fetchController.signal,
-        redirect: 'follow',
+      const proxyController = new AbortController();
+      const proxyTimeout = setTimeout(() => proxyController.abort(), 6000);
+
+      const proxyRes = await fetch(buildProxyUrl(url), {
+        signal: proxyController.signal,
       });
+      clearTimeout(proxyTimeout);
 
-      if (directResponse.status === 403 || directResponse.status === 401) {
-        clearTimeout(fetchTimeout);
-        clearTimeout(timeoutId);
-        return {
-          success: false,
-          url,
-          error: `Access to this job link was blocked by anti-bot verification or login authentication (HTTP ${directResponse.status}). Please copy and paste the job description text directly.`,
-        };
-      }
+      if (proxyRes.ok) {
+        const rawHtml = await proxyRes.text();
+        if (rawHtml && !isBotProtectionResponse(rawHtml)) {
+          const cleanText = cleanJobHtml(rawHtml);
+          const meta = extractJobMetadata(rawHtml);
 
-      if (directResponse.status === 429) {
-        clearTimeout(fetchTimeout);
-        clearTimeout(timeoutId);
-        return {
-          success: false,
-          url,
-          error: 'Rate limit reached for this site (HTTP 429). Please wait a moment or paste the job description text directly.',
-        };
-      }
-
-      if (directResponse.url && (
-        directResponse.url.includes('/login') ||
-        directResponse.url.includes('/signin') ||
-        directResponse.url.includes('/auth') ||
-        directResponse.url.includes('accounts.google.com')
-      )) {
-        clearTimeout(fetchTimeout);
-        clearTimeout(timeoutId);
-        return {
-          success: false,
-          url,
-          error: 'This job link redirected to an authentication login screen. Please copy and paste the job description text directly.',
-        };
-      }
-
-      if (directResponse.ok) {
-        rawHtml = await directResponse.text();
+          if (isJobDescriptionContent(cleanText, meta, url)) {
+            const wordCount = cleanText.split(/\s+/).filter(Boolean).length;
+            return {
+              success: true,
+              text: cleanText,
+              title: meta.title,
+              company: meta.company,
+              location: meta.location,
+              url,
+              wordCount,
+              charCount: cleanText.length,
+              source: 'cors_proxy',
+            };
+          }
+        }
       }
     } catch {
-      // Direct fetch may fail due to browser CORS restriction. Try CORS proxy fallback.
-      const corsProxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
-      const proxyResponse = await fetch(corsProxyUrl, {
-        signal: fetchController.signal,
-      });
-      if (proxyResponse.ok) {
-        rawHtml = await proxyResponse.text();
-      }
+      // Continue to next proxy
     }
-
-    clearTimeout(fetchTimeout);
-    clearTimeout(timeoutId);
-
-    // Bot challenge detection in raw HTML
-    if (rawHtml && isBotProtectionResponse(rawHtml)) {
-      return {
-        success: false,
-        url,
-        error: 'Access blocked by automated bot security verification (Cloudflare/CAPTCHA). Please copy and paste the job description text directly.',
-      };
-    }
-
-    if (rawHtml) {
-      const cleanText = cleanJobHtml(rawHtml);
-      const meta = extractJobMetadata(rawHtml);
-
-      // Validate that content is a genuine Job Description
-      if (!isJobDescriptionContent(cleanText, meta, url)) {
-        return {
-          success: false,
-          url,
-          error: INVALID_JOB_URL_ERROR,
-        };
-      }
-
-      const wordCount = cleanText.split(/\s+/).filter(Boolean).length;
-      return {
-        success: true,
-        text: cleanText,
-        title: meta.title,
-        company: meta.company,
-        location: meta.location,
-        url,
-        wordCount,
-        charCount: cleanText.length,
-        source: 'client_fetch',
-      };
-    }
-  } catch (err) {
-    clearTimeout(timeoutId);
-    return {
-      success: false,
-      url,
-      error: `Failed to fetch URL: ${err.message || 'Network error'}. Please paste the job description text directly.`,
-    };
   }
 
+  // -------------------------------------------------------------------------
+  // STAGE 4: Graceful, Actionable Error Reporting (Never unhandled or crash)
+  // -------------------------------------------------------------------------
   return {
     success: false,
     url,
-    error: INVALID_JOB_URL_ERROR,
+    error: `Unable to extract job text from this link (likely protected by anti-bot verification or login authentication). Please copy and paste the job description text directly.`,
   };
 }
