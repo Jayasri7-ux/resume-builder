@@ -8,6 +8,7 @@
 import { OLLAMA_BASE_URL, DEFAULT_MODEL, safeParseJson, extractOllamaResponseText } from './ollamaService.js';
 import { enforceFactFirewall } from './factFirewall.js';
 import { sanitizeCompletedSentence } from './customInstructionService.js';
+import { shouldUseCloudAi, callCloudAi, hasCloudApiKey } from './cloudAiService.js';
 
 export { sanitizeCompletedSentence };
 
@@ -266,6 +267,7 @@ export async function tailorResumePipeline({
   baseUrl = OLLAMA_BASE_URL,
   options = { temperature: 0.3, num_predict: 1024 },
   timeoutMs = 300000,
+  isOllamaOnline = undefined,
 }) {
   if (!jobDescription || !jobDescription.trim()) {
     throw new Error('Please provide a target job description to tailor the resume.');
@@ -281,8 +283,7 @@ export async function tailorResumePipeline({
   let source = 'ollama_ai';
   let rawResponse = null;
   let executionError = null;
-
-  const cleanBaseUrl = (baseUrl || OLLAMA_BASE_URL).replace(/\/+$/, '');
+  let modelUsed = model;
 
   const finalOptions = {
     temperature: 0.3,
@@ -293,52 +294,122 @@ export async function tailorResumePipeline({
     finalOptions.num_predict = 1024;
   }
 
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs); // 120s timeout budget for local LLM
+  // 1. Dual-Engine Check: Should route through Cloud AI or deterministic fallback?
+  const routeToCloud = shouldUseCloudAi(isOllamaOnline);
+
+  if (routeToCloud) {
+    // Public Vercel deployment or Ollama offline
+    if (hasCloudApiKey()) {
+      try {
+        const cloudRes = await callCloudAi({
+          prompt,
+          systemPrompt:
+            'You are an elite executive career strategist, technical recruiter, and ATS optimization AI. Return ONLY a valid JSON object matching the requested schema.',
+          jsonMode: true,
+        });
+
+        if (cloudRes.success && cloudRes.data) {
+          tailoredData = cloudRes.data;
+          source = 'cloud_ai';
+          modelUsed = `${cloudRes.provider.toUpperCase()} (${cloudRes.model})`;
+          rawResponse = cloudRes.raw;
+        } else if (cloudRes.error) {
+          executionError = cloudRes.error;
+        }
+      } catch (err) {
+        executionError = err.message;
+      }
+    }
+
+    if (!tailoredData) {
+      tailoredData = generateDeterministicTailoring({
+        masterProfile,
+        jobDescription,
+        approvedMissingTech,
+        rejectedMissingTech,
+      });
+      source = 'smart_engine_fallback';
+      modelUsed = 'Deterministic Rule Engine (Cloud Standby)';
+    }
+  } else {
+    // 2. Localhost Development: Attempt local Ollama
+    const cleanBaseUrl = (baseUrl || OLLAMA_BASE_URL).replace(/\/+$/, '');
 
     try {
-      const response = await fetch(`${cleanBaseUrl}/api/generate`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-        body: JSON.stringify({
-          model,
-          prompt,
-          stream: false,
-          format: 'json',
-          options: finalOptions,
-        }),
-        signal: controller.signal,
-      });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-      if (response.ok) {
-        const result = await response.json();
-        const rawText = extractOllamaResponseText(result);
-        if (rawText) {
-          rawResponse = rawText;
-          tailoredData = safeParseJson(rawText);
+      try {
+        const response = await fetch(`${cleanBaseUrl}/api/generate`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
+          body: JSON.stringify({
+            model,
+            prompt,
+            stream: false,
+            format: 'json',
+            options: finalOptions,
+          }),
+          signal: controller.signal,
+        });
+
+        if (response.ok) {
+          const result = await response.json();
+          const rawText = extractOllamaResponseText(result);
+          if (rawText) {
+            rawResponse = rawText;
+            tailoredData = safeParseJson(rawText);
+            modelUsed = result.model || model;
+          } else {
+            throw new Error(
+              'Ollama response missing generated text property ("response" or "message.content")'
+            );
+          }
         } else {
-          throw new Error('Ollama response missing generated text property ("response" or "message.content")');
+          throw new Error(`Ollama returned status ${response.status}: ${response.statusText}`);
         }
-      } else {
-        throw new Error(`Ollama returned status ${response.status}: ${response.statusText}`);
+      } finally {
+        clearTimeout(timeoutId);
       }
-    } finally {
-      clearTimeout(timeoutId);
+    } catch (err) {
+      executionError = err.message;
+
+      // Local Ollama failed: attempt Cloud AI fallback if configured
+      if (hasCloudApiKey()) {
+        try {
+          const cloudRes = await callCloudAi({
+            prompt,
+            systemPrompt:
+              'You are an elite executive career strategist, technical recruiter, and ATS optimization AI. Return ONLY a valid JSON object matching the requested schema.',
+            jsonMode: true,
+          });
+
+          if (cloudRes.success && cloudRes.data) {
+            tailoredData = cloudRes.data;
+            source = 'cloud_ai';
+            modelUsed = `${cloudRes.provider.toUpperCase()} (${cloudRes.model})`;
+            rawResponse = cloudRes.raw;
+          }
+        } catch {
+          // Fall through to deterministic
+        }
+      }
+
+      if (!tailoredData) {
+        // Seamlessly activate the Smart Deterministic Engine
+        tailoredData = generateDeterministicTailoring({
+          masterProfile,
+          jobDescription,
+          approvedMissingTech,
+          rejectedMissingTech,
+        });
+        source = 'smart_engine_fallback';
+        modelUsed = 'Deterministic Rule Engine';
+      }
     }
-  } catch (err) {
-    executionError = err.message;
-    // Ollama is offline or timed out - seamlessly activate the Smart Deterministic Engine
-    tailoredData = generateDeterministicTailoring({
-      masterProfile,
-      jobDescription,
-      approvedMissingTech,
-      rejectedMissingTech,
-    });
-    source = 'smart_engine_fallback';
   }
 
   // Safety normalization: ensure all critical schema keys are present
@@ -350,6 +421,7 @@ export async function tailorResumePipeline({
       rejectedMissingTech,
     });
     source = 'smart_engine_fallback';
+    modelUsed = 'Deterministic Rule Engine';
   }
 
   tailoredData.approvedMissingTech = approvedMissingTech;
@@ -408,7 +480,7 @@ Fake News Detection System AI Health Chatbot Smart India Hackathon`;
     success: true,
     data: tailoredData,
     source,
-    model: source === 'ollama_ai' ? model : 'Deterministic Rule Engine',
+    model: source === 'ollama_ai' ? model : source === 'cloud_ai' ? modelUsed : 'Deterministic Rule Engine',
     factAudit,
     raw: rawResponse,
     offlineNotice: executionError ? `Local Ollama is offline or unreachable (${executionError}). Tailored using Smart Rule Engine.` : null,

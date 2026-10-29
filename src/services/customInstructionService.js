@@ -8,6 +8,7 @@
  */
 
 import { OLLAMA_BASE_URL, DEFAULT_MODEL, safeParseJson, extractOllamaResponseText } from './ollamaService.js';
+import { shouldUseCloudAi, callCloudAi, hasCloudApiKey } from './cloudAiService.js';
 
 export const FACT_FIREWALL_ERROR_MESSAGE =
   'Action Blocked: Core facts like education, certifications, and personal info are immutable sources of truth and cannot be edited via custom instructions.';
@@ -480,6 +481,7 @@ export async function applyCustomInstructionPipeline({
   model = DEFAULT_MODEL,
   baseUrl = OLLAMA_BASE_URL,
   timeoutMs = 1800,
+  isOllamaOnline = undefined,
 } = {}) {
   const cleanBaseUrl = (baseUrl || OLLAMA_BASE_URL).replace(/\/+$/, '');
   const startTime = Date.now();
@@ -573,52 +575,103 @@ CRITICAL RULES:
       return sanitizeCompletedSentence(String(val || ''));
     };
 
-    const response = await fetch(`${cleanBaseUrl}/api/generate`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-      },
-      body: JSON.stringify(requestBody),
-      signal: controller.signal,
-    });
+    // Dual-Engine Check: Route to Cloud AI if on public domain or Ollama is offline
+    const routeToCloud = shouldUseCloudAi(isOllamaOnline);
 
-    clearTimeout(timeoutId);
+    if (routeToCloud && hasCloudApiKey()) {
+      try {
+        const cloudRes = await callCloudAi({
+          prompt: customPrompt,
+          systemPrompt,
+          jsonMode: true,
+          timeoutMs: 15000,
+        });
 
-    if (response.ok) {
-      const result = await response.json();
-      const rawText = extractOllamaResponseText(result);
+        if (cloudRes.success && cloudRes.data) {
+          const parsed = cloudRes.data;
 
-      if (rawText) {
-        const parsed = safeParseJson(rawText);
+          if (parsed.scope_violation === true) {
+            return {
+              success: false,
+              blocked: false,
+              scope_violation: true,
+              message: SCOPE_VIOLATION_MESSAGE,
+              durationMs: Date.now() - startTime,
+              engine: `Cloud AI (${cloudRes.provider.toUpperCase()}: ${cloudRes.model})`,
+            };
+          }
 
-        if (parsed.scope_violation === true) {
-          return {
-            success: false,
-            blocked: false,
-            scope_violation: true,
-            message: SCOPE_VIOLATION_MESSAGE,
-            durationMs: Date.now() - startTime,
-            engine: `Ollama (${model})`,
-          };
+          const candidateText =
+            parsed.rewrittenText ??
+            parsed.rewritten_text ??
+            parsed.text ??
+            parsed.result ??
+            (typeof parsed === 'string' ? parsed : null);
+
+          if (candidateText !== null && candidateText !== undefined) {
+            return {
+              success: true,
+              rewrittenText: sanitizeOutput(candidateText),
+              durationMs: Date.now() - startTime,
+              engine: `Cloud AI (${cloudRes.provider.toUpperCase()}: ${cloudRes.model})`,
+            };
+          }
         }
+      } catch {
+        // Fall through
+      }
+    }
 
-        const candidateText =
-          parsed.rewrittenText ??
-          parsed.rewritten_text ??
-          parsed.text ??
-          parsed.result ??
-          (typeof parsed === 'string' ? parsed : null);
+    if (!routeToCloud) {
+      const response = await fetch(`${cleanBaseUrl}/api/generate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: JSON.stringify(requestBody),
+        signal: controller.signal,
+      });
 
-        if (candidateText !== null && candidateText !== undefined) {
-          return {
-            success: true,
-            rewrittenText: sanitizeOutput(candidateText),
-            durationMs: Date.now() - startTime,
-            engine: `Ollama (${model})`,
-          };
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        const result = await response.json();
+        const rawText = extractOllamaResponseText(result);
+
+        if (rawText) {
+          const parsed = safeParseJson(rawText);
+
+          if (parsed.scope_violation === true) {
+            return {
+              success: false,
+              blocked: false,
+              scope_violation: true,
+              message: SCOPE_VIOLATION_MESSAGE,
+              durationMs: Date.now() - startTime,
+              engine: `Ollama (${model})`,
+            };
+          }
+
+          const candidateText =
+            parsed.rewrittenText ??
+            parsed.rewritten_text ??
+            parsed.text ??
+            parsed.result ??
+            (typeof parsed === 'string' ? parsed : null);
+
+          if (candidateText !== null && candidateText !== undefined) {
+            return {
+              success: true,
+              rewrittenText: sanitizeOutput(candidateText),
+              durationMs: Date.now() - startTime,
+              engine: `Ollama (${model})`,
+            };
+          }
         }
       }
+    } else {
+      clearTimeout(timeoutId);
     }
 
     // If Ollama didn't return valid text, use fast deterministic fallback

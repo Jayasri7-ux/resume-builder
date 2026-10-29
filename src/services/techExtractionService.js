@@ -14,6 +14,7 @@
 
 import { OLLAMA_BASE_URL, DEFAULT_MODEL, safeParseJson, extractOllamaResponseText } from './ollamaService.js';
 import { stripConversationalArtifacts } from './gatekeeperService.js';
+import { shouldUseCloudAi, callCloudAi, hasCloudApiKey } from './cloudAiService.js';
 
 // ======================================================================
 // 1. GLOBAL DICTIONARY & SYNONYM / TYPO NORMALIZATION MAP
@@ -1153,6 +1154,7 @@ export async function runTechExtractionPipeline({
   model = DEFAULT_MODEL,
   baseUrl = OLLAMA_BASE_URL,
   timeoutMs = 300000,
+  isOllamaOnline = undefined,
 }) {
   const cleanJd = typeof stripConversationalArtifacts === 'function'
     ? stripConversationalArtifacts(sanitizedJd)
@@ -1164,89 +1166,146 @@ export async function runTechExtractionPipeline({
   let finalCategorized = deterministicExtraction;
   let engine = 'Deterministic Global Dictionary';
 
-  const cleanBaseUrl = (baseUrl || OLLAMA_BASE_URL).replace(/\/+$/, '');
+  // Helper to merge and normalize LLM extracted items through Global Dictionary
+  const mergeLlmBuckets = (parsed) => {
+    if (!parsed || typeof parsed !== 'object') return false;
 
-  // 2. Attempt Ollama AI extraction if reachable
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const enrichedBuckets = {
+      Languages: new Set(deterministicExtraction.Languages),
+      Frameworks: new Set(deterministicExtraction.Frameworks),
+      Databases: new Set(deterministicExtraction.Databases),
+      'Cloud/DevOps': new Set(deterministicExtraction['Cloud/DevOps']),
+      Tools: new Set(deterministicExtraction.Tools),
+      'Core Domains': new Set(deterministicExtraction['Core Domains']),
+      'Soft Skills': new Set(deterministicExtraction['Soft Skills']),
+    };
 
-    try {
-      const prompt = buildTechExtractionPrompt(cleanJd);
-      const response = await fetch(`${cleanBaseUrl}/api/generate`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-        body: JSON.stringify({
-          model,
-          prompt,
-          stream: false,
-          format: 'json',
-          options: {
-            temperature: 0.1,
-            num_predict: 1024, // Ample token budget (>= 1024) for comprehensive tech extraction
-          },
-        }),
-        signal: controller.signal,
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        const rawText = extractOllamaResponseText(data);
-        const parsed = rawText ? safeParseJson(rawText) : null;
-
-      if (parsed && typeof parsed === 'object') {
-        // Normalize any raw LLM items through our Global Dictionary & Anti-Fluff
-        const enrichedBuckets = {
-          Languages: new Set(deterministicExtraction.Languages),
-          Frameworks: new Set(deterministicExtraction.Frameworks),
-          Databases: new Set(deterministicExtraction.Databases),
-          'Cloud/DevOps': new Set(deterministicExtraction['Cloud/DevOps']),
-          Tools: new Set(deterministicExtraction.Tools),
-          'Core Domains': new Set(deterministicExtraction['Core Domains']),
-          'Soft Skills': new Set(deterministicExtraction['Soft Skills']),
-        };
-
-        Object.entries(parsed).forEach(([, items]) => {
-          if (Array.isArray(items)) {
-            items.forEach((item) => {
-              const normalized = normalizeTechTerm(item);
-              if (normalized) {
-                const targetBucket = assignTechBucket(normalized);
-                if (enrichedBuckets[targetBucket]) {
-                  enrichedBuckets[targetBucket].add(normalized);
-                }
-              }
-            });
+    Object.entries(parsed).forEach(([, items]) => {
+      if (Array.isArray(items)) {
+        items.forEach((item) => {
+          const normalized = normalizeTechTerm(item);
+          if (normalized) {
+            const targetBucket = assignTechBucket(normalized);
+            if (enrichedBuckets[targetBucket]) {
+              enrichedBuckets[targetBucket].add(normalized);
+            }
           }
         });
+      }
+    });
 
-        // Convert sets back to arrays
-        const allEnriched = new Set();
-        const mergedCategorized = {};
-        Object.entries(enrichedBuckets).forEach(([bucket, set]) => {
-          const list = Array.from(set).sort();
-          mergedCategorized[bucket] = list;
-          list.forEach((item) => allEnriched.add(item));
+    const allEnriched = new Set();
+    const mergedCategorized = {};
+    Object.entries(enrichedBuckets).forEach(([bucket, set]) => {
+      const list = Array.from(set).sort();
+      mergedCategorized[bucket] = list;
+      list.forEach((item) => allEnriched.add(item));
+    });
+
+    finalCategorized = {
+      ...mergedCategorized,
+      allExtracted: Array.from(allEnriched).sort(),
+      discardedFluffCount: deterministicExtraction.discardedFluffCount,
+      discardedFluffList: deterministicExtraction.discardedFluffList,
+    };
+    return true;
+  };
+
+  // 2. Dual-Engine Check: Public domain or Ollama offline -> Route to Cloud AI
+  const routeToCloud = shouldUseCloudAi(isOllamaOnline);
+
+  if (routeToCloud) {
+    if (hasCloudApiKey()) {
+      try {
+        const prompt = buildTechExtractionPrompt(cleanJd);
+        const cloudRes = await callCloudAi({
+          prompt,
+          systemPrompt:
+            'You are an expert technical resume analyst. Return ONLY valid JSON categorizing all technical tools and domains.',
+          jsonMode: true,
         });
 
-        finalCategorized = {
-          ...mergedCategorized,
-          allExtracted: Array.from(allEnriched).sort(),
-          discardedFluffCount: deterministicExtraction.discardedFluffCount,
-          discardedFluffList: deterministicExtraction.discardedFluffList,
-        };
-        engine = `Ollama (${model}) + Global Dictionary`;
+        if (cloudRes.success && cloudRes.data) {
+          const merged = mergeLlmBuckets(cloudRes.data);
+          if (merged) {
+            engine = `Cloud AI (${cloudRes.provider.toUpperCase()}: ${cloudRes.model}) + Global Dictionary`;
+          }
+        }
+      } catch {
+        // Fall through to deterministic
+      }
+    } else {
+      engine = 'Deterministic Global Dictionary Engine (Cloud Standby)';
+    }
+  } else {
+    // Localhost Development: Attempt Ollama
+    const cleanBaseUrl = (baseUrl || OLLAMA_BASE_URL).replace(/\/+$/, '');
+
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+      try {
+        const prompt = buildTechExtractionPrompt(cleanJd);
+        const response = await fetch(`${cleanBaseUrl}/api/generate`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
+          body: JSON.stringify({
+            model,
+            prompt,
+            stream: false,
+            format: 'json',
+            options: {
+              temperature: 0.1,
+              num_predict: 1024,
+            },
+          }),
+          signal: controller.signal,
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          const rawText = extractOllamaResponseText(data);
+          const parsed = rawText ? safeParseJson(rawText) : null;
+
+          if (parsed && typeof parsed === 'object') {
+            const merged = mergeLlmBuckets(parsed);
+            if (merged) {
+              engine = `Ollama (${model}) + Global Dictionary`;
+            }
+          }
+        }
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    } catch {
+      // Local Ollama failed: attempt Cloud AI fallback if configured
+      if (hasCloudApiKey()) {
+        try {
+          const prompt = buildTechExtractionPrompt(cleanJd);
+          const cloudRes = await callCloudAi({
+            prompt,
+            systemPrompt:
+              'You are an expert technical resume analyst. Return ONLY valid JSON categorizing all technical tools and domains.',
+            jsonMode: true,
+          });
+
+          if (cloudRes.success && cloudRes.data) {
+            const merged = mergeLlmBuckets(cloudRes.data);
+            if (merged) {
+              engine = `Cloud AI (${cloudRes.provider.toUpperCase()}: ${cloudRes.model}) + Global Dictionary`;
+            }
+          }
+        } catch {
+          // Fall through to deterministic
+        }
+      } else {
+        engine = 'Deterministic Global Dictionary Engine';
       }
     }
-  } finally {
-    clearTimeout(timeoutId);
-  }
-} catch {
-    // Graceful fallback to deterministic results
-    engine = 'Deterministic Global Dictionary Engine';
   }
 
   // 3. Human-in-the-Loop Missing Tech Analysis

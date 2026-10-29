@@ -7,6 +7,12 @@
 
 import { OLLAMA_BASE_URL, DEFAULT_MODEL, safeParseJson, extractOllamaResponseText } from './ollamaService.js';
 import { normalizeMasterProfile, validateMasterProfile } from '../types/masterProfileSchema.js';
+import {
+  shouldUseCloudAi,
+  callCloudAi,
+  hasCloudApiKey,
+  parseResumeDeterministic,
+} from './cloudAiService.js';
 
 /**
  * Builds the XML-delimited prompt for parsing raw resume text into Master Profile JSON.
@@ -159,40 +165,92 @@ export async function parseResumeWithOllama({
   baseUrl = OLLAMA_BASE_URL,
   options = { temperature: 0.1, num_predict: 2048 },
   timeoutMs = 300000,
+  isOllamaOnline = undefined,
 }) {
   if (!rawResumeText || !rawResumeText.trim()) {
     return { success: false, error: 'Resume text is empty. Please provide resume content to parse.' };
   }
 
-  try {
-    // Check if the input is directly a pre-exported JSON master profile
-    const trimmed = rawResumeText.trim();
-    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+  const trimmed = rawResumeText.trim();
+
+  // 1. Check if the input is directly a pre-exported JSON master profile
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    try {
+      const directJson = JSON.parse(trimmed);
+      if (directJson.personalInfo || directJson.eligibleJobRoles || directJson.workExperience) {
+        const directNormalized = normalizeMasterProfile({
+          ...directJson,
+          metadata: {
+            source: 'json_import',
+            lastUpdated: new Date().toISOString(),
+          },
+        });
+        const validation = validateMasterProfile(directNormalized);
+        if (validation.valid) {
+          return {
+            success: true,
+            profile: directNormalized,
+            raw: trimmed,
+            isDirectJson: true,
+            engine: 'JSON Schema Direct Importer',
+          };
+        }
+      }
+    } catch {
+      // Not a pure direct JSON, proceed with parsing
+    }
+  }
+
+  // 2. Dual-Engine Check: Route to Cloud AI or deterministic fallback if on public domain or Ollama offline
+  const routeToCloud = shouldUseCloudAi(isOllamaOnline);
+
+  if (routeToCloud) {
+    if (hasCloudApiKey()) {
       try {
-        const directJson = JSON.parse(trimmed);
-        if (directJson.personalInfo || directJson.eligibleJobRoles || directJson.workExperience) {
-          const directNormalized = normalizeMasterProfile({
-            ...directJson,
+        const prompt = buildProfileParsingPrompt(trimmed);
+        const cloudResult = await callCloudAi({
+          prompt,
+          systemPrompt:
+            'You are an expert resume parsing engine. Always extract all profile sections into valid JSON matching the schema.',
+          jsonMode: true,
+        });
+
+        if (cloudResult.success && cloudResult.data) {
+          const normalized = normalizeMasterProfile({
+            ...cloudResult.data,
             metadata: {
-              source: 'json_import',
+              source: `cloud_${cloudResult.provider}_${cloudResult.model}`,
               lastUpdated: new Date().toISOString(),
+              modelUsed: `${cloudResult.provider.toUpperCase()} (${cloudResult.model})`,
             },
           });
-          const validation = validateMasterProfile(directNormalized);
-          if (validation.valid) {
-            return {
-              success: true,
-              profile: directNormalized,
-              raw: trimmed,
-              isDirectJson: true,
-            };
-          }
+          return {
+            success: true,
+            profile: normalized,
+            raw: cloudResult.raw,
+            engine: `Cloud AI (${cloudResult.provider.toUpperCase()}: ${cloudResult.model})`,
+            durationMs: cloudResult.durationMs,
+          };
         }
       } catch {
-        // Not a pure direct JSON, proceed with LLM parsing
+        // Fall through to deterministic fallback
       }
     }
 
+    // Zero-Key Fallback: Deterministic pattern parser guaranteed to never fail or throw
+    const deterministicProfile = parseResumeDeterministic(trimmed);
+    return {
+      success: true,
+      profile: deterministicProfile,
+      raw: trimmed,
+      engine: 'Smart Pattern Parser (Deterministic Fallback)',
+      notice:
+        'Parsed using Smart Pattern Parser. Configure a free Groq or Gemini API key in settings for deep LLM extraction.',
+    };
+  }
+
+  // 3. Localhost Development with Ollama
+  try {
     const prompt = buildProfileParsingPrompt(trimmed);
 
     const finalOptions = {
@@ -231,7 +289,9 @@ export async function parseResumeWithOllama({
 
       if (!response.ok) {
         const errorText = await response.text().catch(() => '');
-        throw new Error(`Ollama API error (${response.status} ${response.statusText}): ${errorText || 'Failed to call Ollama'}`);
+        throw new Error(
+          `Ollama API error (${response.status} ${response.statusText}): ${errorText || 'Failed to call Ollama'}`
+        );
       }
 
       const result = await response.json();
@@ -258,28 +318,62 @@ export async function parseResumeWithOllama({
         success: true,
         profile: normalizedProfile,
         raw: rawText,
+        engine: `Ollama (${model})`,
         durationMs: result.total_duration ? Math.round(result.total_duration / 1000000) : null,
       };
     } finally {
       clearTimeout(timeoutId);
     }
   } catch (error) {
-    let message = error.message;
-    if (error.name === 'AbortError') {
-      message = `Resume parsing timed out after ${timeoutMs / 1000}s on ${baseUrl}. Local LLMs may require more time on initial startup or complex resumes; ensure your Ollama instance is responsive or try a lighter model.`;
-    } else if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
-      message = `Cannot reach Ollama at ${baseUrl}. Ensure Ollama is running ('ollama serve') and CORS allows browser requests ($env:OLLAMA_ORIGINS="*").`;
+    // If local Ollama is offline or timed out, seamlessly fall back to Cloud AI or Deterministic Parser
+    if (hasCloudApiKey()) {
+      try {
+        const prompt = buildProfileParsingPrompt(trimmed);
+        const cloudResult = await callCloudAi({
+          prompt,
+          systemPrompt:
+            'You are an expert resume parsing engine. Always extract all profile sections into valid JSON matching the schema.',
+          jsonMode: true,
+        });
+
+        if (cloudResult.success && cloudResult.data) {
+          const normalized = normalizeMasterProfile({
+            ...cloudResult.data,
+            metadata: {
+              source: `cloud_${cloudResult.provider}_${cloudResult.model}`,
+              lastUpdated: new Date().toISOString(),
+              modelUsed: `${cloudResult.provider.toUpperCase()} (${cloudResult.model})`,
+            },
+          });
+          return {
+            success: true,
+            profile: normalized,
+            raw: cloudResult.raw,
+            engine: `Cloud AI (${cloudResult.provider.toUpperCase()}: ${cloudResult.model})`,
+            durationMs: cloudResult.durationMs,
+          };
+        }
+      } catch {
+        // Fall through to deterministic
+      }
     }
 
+    const fallbackProfile = parseResumeDeterministic(trimmed);
     return {
-      success: false,
-      error: message,
+      success: true,
+      profile: fallbackProfile,
+      raw: trimmed,
+      engine: 'Smart Pattern Parser (Offline Standby)',
+      notice: `Local Ollama is offline or timed out (${error.message}). Parsed using Smart Pattern Parser.`,
     };
   }
 }
+
+export { parseResumeDeterministic };
 
 export default {
   buildProfileParsingPrompt,
   extractTextFromFile,
   parseResumeWithOllama,
+  parseResumeDeterministic,
 };

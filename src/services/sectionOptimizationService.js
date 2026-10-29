@@ -19,6 +19,7 @@
 import { OLLAMA_BASE_URL, DEFAULT_MODEL, safeParseJson, extractOllamaResponseText } from './ollamaService.js';
 import { auditFactIntegrity } from './factFirewall.js';
 import { sanitizeCompletedSentence, DANGLING_END_WORDS } from './customInstructionService.js';
+import { shouldUseCloudAi, callCloudAi, hasCloudApiKey } from './cloudAiService.js';
 
 export { sanitizeCompletedSentence, DANGLING_END_WORDS };
 
@@ -614,6 +615,7 @@ export async function batchOptimizeDynamicSectionsPipeline({
   baseUrl = OLLAMA_BASE_URL,
   options = { temperature: 0.2, num_predict: 1024 },
   timeoutMs = 3500,
+  isOllamaOnline = undefined,
 }) {
   const startTime = Date.now();
 
@@ -633,54 +635,102 @@ export async function batchOptimizeDynamicSectionsPipeline({
   let engine = `Ollama AI (${model})`;
   let notice = null;
 
-  const cleanBaseUrl = (baseUrl || OLLAMA_BASE_URL).replace(/\/+$/, '');
+  const routeToCloud = shouldUseCloudAi(isOllamaOnline);
 
-  const finalOptions = {
-    temperature: 0.2,
-    num_predict: 1024,
-    ...(options || {}),
-  };
-  if (!finalOptions.num_predict || finalOptions.num_predict < 512) {
-    finalOptions.num_predict = 1024;
-  }
+  if (routeToCloud) {
+    if (hasCloudApiKey()) {
+      try {
+        const cloudRes = await callCloudAi({
+          prompt,
+          systemPrompt:
+            'You are an expert AI resume editor. Return ONLY valid JSON matching the exact schema without code fences.',
+          jsonMode: true,
+          timeoutMs: 15000,
+        });
 
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        if (cloudRes.success && cloudRes.data) {
+          rawJson = cloudRes.data;
+          engine = `Cloud AI (${cloudRes.provider.toUpperCase()}: ${cloudRes.model})`;
+        }
+      } catch (err) {
+        notice = `Cloud optimization error (${err.message}). Instant fallback optimizer engaged.`;
+      }
+    }
+    if (!rawJson) {
+      engine = 'Deterministic Section Optimizer (Cloud Standby)';
+    }
+  } else {
+    const cleanBaseUrl = (baseUrl || OLLAMA_BASE_URL).replace(/\/+$/, '');
+
+    const finalOptions = {
+      temperature: 0.2,
+      num_predict: 1024,
+      ...(options || {}),
+    };
+    if (!finalOptions.num_predict || finalOptions.num_predict < 512) {
+      finalOptions.num_predict = 1024;
+    }
 
     try {
-      const response = await fetch(`${cleanBaseUrl}/api/generate`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-        body: JSON.stringify({
-          model,
-          prompt,
-          stream: false,
-          format: 'json',
-          options: finalOptions,
-        }),
-        signal: controller.signal,
-      });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-      if (response.ok) {
-        const result = await response.json();
-        const rawText = extractOllamaResponseText(result);
-        if (rawText) {
-          rawJson = safeParseJson(rawText);
+      try {
+        const response = await fetch(`${cleanBaseUrl}/api/generate`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
+          body: JSON.stringify({
+            model,
+            prompt,
+            stream: false,
+            format: 'json',
+            options: finalOptions,
+          }),
+          signal: controller.signal,
+        });
+
+        if (response.ok) {
+          const result = await response.json();
+          const rawText = extractOllamaResponseText(result);
+          if (rawText) {
+            rawJson = safeParseJson(rawText);
+          }
+        } else {
+          throw new Error(`Ollama returned status ${response.status}`);
         }
-      } else {
-        throw new Error(`Ollama returned status ${response.status}`);
+      } finally {
+        clearTimeout(timeoutId);
       }
-    } finally {
-      clearTimeout(timeoutId);
+    } catch (err) {
+      notice = `Local inference standby (${err.message}). Instant fallback optimizer engaged.`;
+      rawJson = null;
+
+      if (hasCloudApiKey()) {
+        try {
+          const cloudRes = await callCloudAi({
+            prompt,
+            systemPrompt:
+              'You are an expert AI resume editor. Return ONLY valid JSON matching the exact schema without code fences.',
+            jsonMode: true,
+            timeoutMs: 15000,
+          });
+
+          if (cloudRes.success && cloudRes.data) {
+            rawJson = cloudRes.data;
+            engine = `Cloud AI (${cloudRes.provider.toUpperCase()}: ${cloudRes.model})`;
+          }
+        } catch {
+          // Fall through
+        }
+      }
+
+      if (!rawJson) {
+        engine = 'Deterministic Section Optimizer (Sub-second Guarantee)';
+      }
     }
-  } catch (err) {
-    notice = `Local inference standby (${err.message}). Instant fallback optimizer engaged.`;
-    rawJson = null;
-    engine = 'Deterministic Section Optimizer (Sub-second Guarantee)';
   }
 
   let finalSections;

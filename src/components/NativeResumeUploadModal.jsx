@@ -16,6 +16,7 @@ import { ingestOriginalDocument } from '../services/documentExtractor';
 import { parseResumeWithOllama, buildProfileParsingPrompt } from '../services/profileParserService';
 import { auditFactIntegrity } from '../services/factFirewall';
 import { OLLAMA_BASE_URL, DEFAULT_MODEL, checkOllamaConnection } from '../services/ollamaService';
+import { isPublicDeployment, getCloudConfig } from '../services/cloudAiService';
 
 const SAMPLE_RESUME_TEXT = `Jaya Sri Palli
 Full Stack Developer
@@ -81,10 +82,13 @@ export default function NativeResumeUploadModal({
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [processingStage, setProcessingStage] = useState('');
 
-  // Auto-detect installed Ollama models upon modal open if not provided by parent
+  const isPublic = isPublicDeployment();
+  const cloudCfg = getCloudConfig();
+
+  // Auto-detect installed Ollama models upon modal open if not on public domain and not provided by parent
   useEffect(() => {
     let ignore = false;
-    if (isOpen && availableModels.length === 0) {
+    if (isOpen && !isPublicDeployment() && availableModels.length === 0) {
       checkOllamaConnection(baseUrl)
         .then((res) => {
           if (!ignore && res.success && res.models && res.models.length > 0) {
@@ -183,9 +187,13 @@ export default function NativeResumeUploadModal({
         };
       }
 
-      setProcessingStage(`Querying Ollama (${selectedModel}) at ${baseUrl} to parse and structure resume JSON (300s CPU budget)...`);
+      const activeEngineLabel = isPublic
+        ? (cloudCfg.hasKey ? `${cloudCfg.provider.toUpperCase()} Cloud AI (${cloudCfg.model})` : 'Smart Pattern Parser (Deterministic)')
+        : `Ollama (${selectedModel})`;
 
-      // 2. Parse via Ollama with XML Delimiters and format: "json" (timeout extended to 300s for CPU inference)
+      setProcessingStage(`Parsing and structuring resume into Master Profile JSON schema via ${activeEngineLabel}...`);
+
+      // 2. Parse via Dual-Engine (Ollama / Cloud AI / Deterministic Fallback)
       const parseResult = await parseResumeWithOllama({
         rawResumeText: rawText || docObj.text,
         model: selectedModel,
@@ -194,7 +202,7 @@ export default function NativeResumeUploadModal({
       });
 
       if (!parseResult.success || !parseResult.profile) {
-        throw new Error(parseResult.error || 'Failed to parse resume with Ollama.');
+        throw new Error(parseResult.error || 'Failed to parse resume.');
       }
 
       setProcessingStage('Auditing extracted profile against Immutable Fact Firewall...');
@@ -356,8 +364,23 @@ export default function NativeResumeUploadModal({
           {/* Controls & Model Row */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
             <div className="flex items-center gap-2">
-              <span className="text-xs text-slate-400 whitespace-nowrap">Ollama Model:</span>
-              {effectiveModels.length > 0 ? (
+              <span className="text-xs text-slate-400 whitespace-nowrap">
+                {isPublic ? 'AI Engine:' : 'Ollama Model:'}
+              </span>
+              {isPublic ? (
+                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-[11px] font-mono text-slate-200">
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full ${
+                      cloudCfg.hasKey ? 'bg-indigo-400' : 'bg-emerald-400'
+                    }`}
+                  />
+                  <span>
+                    {cloudCfg.hasKey
+                      ? `${cloudCfg.provider.toUpperCase()}: ${cloudCfg.model}`
+                      : 'Smart Pattern Parser (Deterministic)'}
+                  </span>
+                </div>
+              ) : effectiveModels.length > 0 ? (
                 <select
                   value={selectedModel}
                   onChange={(e) => setSelectedModel(e.target.value)}
@@ -397,7 +420,7 @@ export default function NativeResumeUploadModal({
                 {isProcessing ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin text-amber-300" />
-                    <span>Parsing with Ollama ({elapsedSeconds}s)...</span>
+                    <span>Parsing Resume ({elapsedSeconds}s)...</span>
                   </>
                 ) : (
                   <>

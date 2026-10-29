@@ -9,6 +9,7 @@
  */
 
 import { OLLAMA_BASE_URL, DEFAULT_MODEL, safeParseJson, extractOllamaResponseText } from './ollamaService.js';
+import { shouldUseCloudAi, callCloudAi, hasCloudApiKey } from './cloudAiService.js';
 import {
   extractTechnicalRequirements,
   analyzeMissingTech,
@@ -1264,6 +1265,7 @@ export async function evaluateGatekeeper({
   baseUrl = OLLAMA_BASE_URL,
   timeoutMs = 15000,
   stripConversationalArtifacts = false,
+  isOllamaOnline = undefined,
 }) {
   // First evaluate deterministic rules for instant high-precision guardrail
   const ruleResult = evaluateGatekeeperRules(cleanedJdText, masterProfile, { stripConversationalArtifacts });
@@ -1281,7 +1283,56 @@ export async function evaluateGatekeeper({
     };
   }
 
-  // Attempt Ollama AI evaluation if connection is alive
+  // Dual-Engine Check: Route to Cloud AI if on public host or Ollama is offline
+  const routeToCloud = shouldUseCloudAi(isOllamaOnline);
+
+  if (routeToCloud) {
+    if (hasCloudApiKey()) {
+      try {
+        const prompt = buildGatekeeperPrompt({ masterProfile, wrappedXmlJd });
+        const cloudRes = await callCloudAi({
+          prompt,
+          systemPrompt:
+            'You are an expert Gatekeeper AI. Output ONLY a valid JSON object matching the requested schema with status PROCEED or ABORT.',
+          jsonMode: true,
+          timeoutMs: 15000,
+        });
+
+        if (cloudRes.success && cloudRes.data) {
+          const parsed = cloudRes.data;
+          if (parsed && (parsed.status === 'ABORT' || parsed.status === 'PROCEED')) {
+            const isAbort = parsed.status === 'ABORT';
+            return {
+              status: parsed.status,
+              reason:
+                parsed.reason ||
+                (isAbort ? 'Role blocked by Gatekeeper AI.' : 'Valid entry-level matching role approved.'),
+              failureReason: isAbort ? parsed.failureReason || 'Blocked by Gatekeeper AI' : null,
+              reasoning:
+                parsed.reasoning ||
+                parsed.reason ||
+                (isAbort ? 'Role blocked by Gatekeeper AI.' : 'Valid entry-level matching role approved.'),
+              engine: `Cloud AI (${cloudRes.provider.toUpperCase()}: ${cloudRes.model})`,
+            };
+          }
+        }
+      } catch {
+        // Fall through to deterministic rules
+      }
+    }
+
+    return {
+      status: ruleResult.status,
+      reason: ruleResult.reason,
+      failureReason: ruleResult.failureReason,
+      reasoning: ruleResult.reasoning || ruleResult.reason,
+      detectedDomain: ruleResult.detectedDomain,
+      matchedTools: ruleResult.matchedTools,
+      engine: 'Deterministic Gatekeeper Rules (Cloud Standby)',
+    };
+  }
+
+  // Attempt Ollama AI evaluation if connection is alive (localhost)
   const cleanBaseUrl = (baseUrl || OLLAMA_BASE_URL).replace(/\/+$/, '');
 
   try {
@@ -1591,6 +1642,7 @@ export async function evaluateJobDescriptionPipeline({
   baseUrl = OLLAMA_BASE_URL,
   timeoutMs = 15000,
   stripConversationalArtifacts: stripArtifacts = false,
+  isOllamaOnline = undefined,
 }) {
   // Pre-Pipeline Check: Specific Hard-Stop Guardrails (Batch Year Mismatch, Exclusive Institution)
   // When a specific constraint is detected in the input, bypass generic text validation
@@ -1651,6 +1703,7 @@ export async function evaluateJobDescriptionPipeline({
     baseUrl,
     timeoutMs,
     stripConversationalArtifacts: stripArtifacts,
+    isOllamaOnline,
   });
 
   if (gatekeeperResult.status === 'ABORT') {

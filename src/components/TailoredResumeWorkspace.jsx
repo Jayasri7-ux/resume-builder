@@ -46,6 +46,8 @@ import TechXRayDashboard from './TechXRayDashboard';
 import SectionDiffPreview from './SectionDiffPreview';
 import SectionCustomInstruction, { BULLET_QUICK_CHIPS } from './SectionCustomInstruction';
 import OptimizationLogView from './OptimizationLogView';
+import CloudAiSettingsModal from './CloudAiSettingsModal';
+import { getCloudConfig, isPublicDeployment } from '../services/cloudAiService';
 
 export { extractTextString, buildOptimizationRationale, exportTailoredPdf, exportTailoredDocx };
 
@@ -109,6 +111,11 @@ export default function TailoredResumeWorkspace({
   const [availableModels, setAvailableModels] = useState([]);
   const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL);
 
+  // Cloud AI & Fallback Settings State
+  const [isCloudModalOpen, setIsCloudModalOpen] = useState(false);
+  const [cloudConfig, setCloudConfigState] = useState(() => getCloudConfig());
+  const isPublic = isPublicDeployment();
+
   // Tailoring Execution State
   const [isTailoring, setIsTailoring] = useState(false);
   const [tailorProgressStep, setTailorProgressStep] = useState(0);
@@ -135,6 +142,12 @@ export default function TailoredResumeWorkspace({
 
   // Check Ollama connection on mount, focus, and polling interval
   const verifyOllamaStatus = useCallback(async () => {
+    // If running on a public domain (e.g. Vercel), localhost:11434 is unreachable
+    if (isPublicDeployment()) {
+      setOllamaOnline(false);
+      return false;
+    }
+
     try {
       const res = await checkOllamaConnection();
       setOllamaOnline(res.success);
@@ -155,16 +168,15 @@ export default function TailoredResumeWorkspace({
   useEffect(() => {
     verifyOllamaStatus();
 
-    // Re-check when window regains focus (e.g. user started Ollama in terminal)
-    window.addEventListener('focus', verifyOllamaStatus);
-
-    // Periodic poll every 12 seconds to automatically detect when Ollama starts
-    const interval = setInterval(verifyOllamaStatus, 12000);
-
-    return () => {
-      window.removeEventListener('focus', verifyOllamaStatus);
-      clearInterval(interval);
-    };
+    // Re-check when window regains focus if in local development
+    if (!isPublicDeployment()) {
+      window.addEventListener('focus', verifyOllamaStatus);
+      const interval = setInterval(verifyOllamaStatus, 12000);
+      return () => {
+        window.removeEventListener('focus', verifyOllamaStatus);
+        clearInterval(interval);
+      };
+    }
   }, [verifyOllamaStatus]);
 
   // URL Scraping & Extraction Handler
@@ -329,6 +341,7 @@ export default function TailoredResumeWorkspace({
       sanitizedJd: gatekeeperEval.cleanedText || textToAnalyze,
       masterProfile: profile,
       model: selectedModel,
+      isOllamaOnline: ollamaOnline,
     });
 
     setIsAnalyzing(false);
@@ -769,6 +782,7 @@ export default function TailoredResumeWorkspace({
         approvedMissingTech,
         rejectedMissingTech,
         model: effectiveModel,
+        isOllamaOnline: ollamaOnline,
       });
 
       setOptimizedSections(sectionOptimization.data);
@@ -793,6 +807,7 @@ export default function TailoredResumeWorkspace({
         approvedMissingTech,
         rejectedMissingTech,
         model: effectiveModel,
+        isOllamaOnline: ollamaOnline,
       });
 
       // Synchronize tailored output with compiled dynamic sections & review decisions
@@ -1317,27 +1332,37 @@ ${tailoredResult.highlightedProjects
 
         {/* Right Toolbar Actions */}
         <div className="flex items-center gap-2">
-          {/* Ollama Status Pill */}
+          {/* AI Engine Status Pill (Dual-Engine: Local Ollama / Cloud LLM) */}
           <button
             type="button"
-            onClick={verifyOllamaStatus}
-            title={
-              ollamaOnline
-                ? 'Ollama is Online (Click to re-verify connection)'
-                : 'Ollama is Offline (Click to re-check connection)'
-            }
+            onClick={() => setIsCloudModalOpen(true)}
+            title="Configure AI Engine (Local Ollama / Groq / Google Gemini Cloud Fallback)"
             className={`hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-mono border transition-all cursor-pointer ${
               ollamaOnline
                 ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/25'
-                : 'bg-rose-500/15 text-rose-300 border-rose-500/30 hover:bg-rose-500/25'
+                : cloudConfig.hasKey
+                ? 'bg-indigo-500/15 text-indigo-300 border-indigo-500/30 hover:bg-indigo-500/25'
+                : 'bg-amber-500/15 text-amber-300 border-amber-500/30 hover:bg-amber-500/25'
             }`}
           >
             <div
               className={`w-1.5 h-1.5 rounded-full ${
-                ollamaOnline ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'
+                ollamaOnline
+                  ? 'bg-emerald-400 animate-pulse'
+                  : cloudConfig.hasKey
+                  ? 'bg-indigo-400 animate-pulse'
+                  : 'bg-amber-400'
               }`}
             />
-            <span>{ollamaOnline ? 'Ollama: Online' : 'Ollama: Offline'}</span>
+            <span>
+              {ollamaOnline
+                ? 'Ollama: Online'
+                : cloudConfig.hasKey
+                ? `Cloud AI: Active (${cloudConfig.provider.toUpperCase()})`
+                : isPublic
+                ? 'Cloud: Deterministic Mode'
+                : 'Local Ollama: Offline (Click for Cloud)'}
+            </span>
           </button>
 
           {/* Model Selector if models available */}
@@ -2470,6 +2495,14 @@ ${tailoredResult.highlightedProjects
           </div>
         </div>
       )}
+
+      {/* Modal to Configure AI Engine & Cloud API Fallback */}
+      <CloudAiSettingsModal
+        isOpen={isCloudModalOpen}
+        onClose={() => setIsCloudModalOpen(false)}
+        ollamaOnline={ollamaOnline}
+        onConfigChange={(newCfg) => setCloudConfigState(newCfg)}
+      />
     </div>
   );
 }
